@@ -60,6 +60,29 @@ boot/config/
 
 ★ = the headline customization.
 
+## Requirements
+
+These scripts have **one external dependency**: the **Asustor Platform Drivers**
+Unraid plugin. It is the *only* Unraid app/plugin you need to install, and it's a
+hard prerequisite — it loads the kernel drivers that expose the **IT8625** fan
+chip (`pwm1` / `fan1_input`), the front-panel **LEDs**, and the **LCD** that the
+fan, LCD, and LED-off scripts all talk to.
+
+- **Install it** from Unraid's **Community Applications** (search *"Asustor
+  Platform Drivers"*), then **reboot**.
+- **Driver source:** <https://github.com/mafredri/asustor-platform-driver>
+  (packaged as the Unraid plugin by
+  [Terebi42/unraid-asustor-pfd](https://github.com/Terebi42/unraid-asustor-pfd)).
+
+Without it, `fan-autocontrol.sh status` reports *"it8625 pwm not found"* and the
+LCD/LED scripts have no hardware to drive. The `it87` blacklist
+([`modprobe.d/it87.conf`](boot/config/modprobe.d/it87.conf)) is included so this
+Asustor driver — not the generic mainline `it87` — owns the chip. Full details in
+[asustor-platform-driver.md](docs/asustor-platform-driver.md).
+
+> `claude-persist.sh` is the exception — it's pure filesystem/symlink work and
+> does **not** need the Asustor plugin.
+
 ## The customizations, briefly
 
 | Customization | What / why | Docs |

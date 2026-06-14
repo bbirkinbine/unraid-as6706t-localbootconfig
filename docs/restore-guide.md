@@ -37,6 +37,8 @@ stick on your workstation, or `scp` them once SSH is up):
 | `boot/config/scripts/fan-autocontrol.sh` | `/boot/config/scripts/fan-autocontrol.sh` |
 | `boot/config/scripts/asustor-lcd.sh` | `/boot/config/scripts/asustor-lcd.sh` |
 | `boot/config/scripts/lcd-info.sh` | `/boot/config/scripts/lcd-info.sh` |
+| `boot/config/scripts/disk-led.sh` | `/boot/config/scripts/disk-led.sh` |
+| `boot/config/scripts/disk-led.pl` | `/boot/config/scripts/disk-led.pl` |
 | `boot/config/scripts/claude-persist.sh` | `/boot/config/scripts/claude-persist.sh` |
 | `boot/config/modprobe.d/it87.conf` | `/boot/config/modprobe.d/it87.conf` |
 | `boot/config/go` | `/boot/config/go` |
@@ -55,8 +57,9 @@ chmod +x /boot/config/scripts/*.sh
 
 What `go` does on the next boot: installs + starts the
 [fan controller](./fan-control.md), disables the blinking
-[green status LED](./front-panel-lcd.md#disabling-the-blinking-status-led), and
-installs + starts the [LCD info daemon](./front-panel-lcd.md). (The Claude
+[green status LED](./front-panel-lcd.md#disabling-the-blinking-status-led),
+installs + starts the [LCD info daemon](./front-panel-lcd.md), and installs +
+starts the [per-bay disk-activity LED daemon](./disk-leds.md). (The Claude
 persistence lines in `go` are intentionally left commented out — see
 [claude-cli-persistence.md](./claude-cli-persistence.md).)
 

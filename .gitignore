@@ -1,0 +1,94 @@
+# =============================================================================
+# Security hygiene for a PUBLIC repo.
+#
+# This repo mirrors selected, NON-SECRET files from an Unraid server's
+# /boot/config. The patterns below are a defense-in-depth denylist: even if the
+# whole /boot/config is ever copied in by accident, git will refuse to stage the
+# sensitive files. Nothing here should ever be removed to "make a file show up" —
+# if a real file is being ignored, it almost certainly should not be committed.
+# =============================================================================
+
+# --- Local login credentials used by tooling (NEVER commit) ------------------
+.env
+.env.*
+*.env
+
+# --- Unraid license key ------------------------------------------------------
+*.key
+Unleashed.key
+Pro.key
+Plus.key
+Basic.key
+Trial.key
+Unraid.key
+
+# --- Local user accounts / password hashes / Samba secrets -------------------
+passwd
+shadow
+smbpasswd
+secrets.tdb
+*.tdb
+
+# --- SSH host keys & authorized_keys (private keys live here) -----------------
+ssh/
+**/ssh_host_*
+id_rsa
+id_ed25519
+id_ecdsa
+*.pem
+authorized_keys
+known_hosts
+
+# --- TLS / SSL certificates and private keys ---------------------------------
+ssl/
+*.crt
+*.cer
+*.csr
+*.pfx
+*.p12
+
+# --- WireGuard / VPN private keys --------------------------------------------
+wireguard/
+wg*.conf
+*.conf.wg
+
+# --- rclone remotes (often hold cloud tokens / obscured passwords) -----------
+rclone/
+rclone.conf
+
+# --- Claude Code CLI auth & local state (OAuth tokens, project history) -------
+.credentials.json
+.claude.json
+**/claude/conf/.credentials.json
+**/claude/conf/.claude.json
+# The big self-updating binary tree — re-downloaded by `claude` itself.
+**/claude/share/
+
+# --- Array / pool assignment + machine identity (binary; reveals disk serials)
+super.dat
+super.old
+machine-id
+random-seed
+savedpcidata.json
+*.tdb
+
+# --- Network rules with MAC addresses (PII; regenerated on boot) --------------
+network-rules.cfg
+network-extra.cfg
+
+# --- Generic secret patterns -------------------------------------------------
+*secret*
+*token*
+*password*
+*.bak.credentials
+*_rsa
+*_dsa
+
+# --- Claude Code local artifacts (personal permissions, not repo content) ----
+.claude/settings.local.json
+
+# --- OS / editor cruft -------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~

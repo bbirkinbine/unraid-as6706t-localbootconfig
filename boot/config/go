@@ -1,0 +1,25 @@
+#!/bin/bash
+# Start the Management Utility
+/usr/local/sbin/emhttp
+
+# --- Fan autocontrol daemon (Asustor Lockerstor 6 Gen2) ---
+install -m 755 /boot/config/scripts/fan-autocontrol.sh /usr/local/sbin/fan-autocontrol.sh
+/usr/local/sbin/fan-autocontrol.sh start
+
+# --- Disable blinking green status LED (GP47) on Asustor front panel ---
+for f in /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1_blink; do
+  [ -w "$f" ] && echo 0 > "$f"
+done
+
+# --- Front-panel LCD: live IP + CPU temp + fan RPM ---
+install -m 755 /boot/config/scripts/asustor-lcd.sh /usr/local/sbin/asustor-lcd.sh
+install -m 755 /boot/config/scripts/lcd-info.sh    /usr/local/sbin/lcd-info.sh
+/usr/local/sbin/lcd-info.sh start
+
+# --- Persist Claude Code CLI across reboots (RAM root) — DISABLED on boot ---
+# Intentionally not run automatically so it can't interfere with normal boot.
+# To re-establish Claude after a reboot, run by hand:
+#   /boot/config/scripts/claude-persist.sh
+# (or: install -m 755 /boot/config/scripts/claude-persist.sh /usr/local/sbin/claude-persist.sh && /usr/local/sbin/claude-persist.sh)
+#install -m 755 /boot/config/scripts/claude-persist.sh /usr/local/sbin/claude-persist.sh
+#/usr/local/sbin/claude-persist.sh

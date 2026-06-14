@@ -103,7 +103,6 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | [front-panel-lcd.md](docs/front-panel-lcd.md) | the LCD scripts + the status-LED tweak |
 | [claude-cli-persistence.md](docs/claude-cli-persistence.md) | persisting the Claude Code CLI |
 | [restore-guide.md](docs/restore-guide.md) | **how to redeploy these scripts after a reinstall** |
-| [security.md](docs/security.md) | what's deliberately excluded + the `.gitignore` denylist |
 
 ## Scope / disclaimer
 

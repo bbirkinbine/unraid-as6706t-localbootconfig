@@ -94,7 +94,7 @@ command above. Uncomment the two lines in `go` if you'd rather have it automatic
 - ✅ Committed: the `claude-persist.sh` script itself, and
   `boot/config/claude/conf/settings.json` (it only contains
   `{"theme": "light-daltonized"}`).
-- ❌ Not committed (see [security.md](./security.md)):
+- ❌ Not committed (secrets / large binaries):
   - `.credentials.json` — your **OAuth token**; never publish.
   - `.claude.json` — local state including identity and per-project history.
   - `share/versions/*` — the ~250 MB self-updating binary; `claude` re-downloads

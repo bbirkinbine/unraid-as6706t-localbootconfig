@@ -7,7 +7,7 @@ Only the non-secret file is committed:
 
 - `settings.json` ✅ — CLI settings (just the theme).
 
-Deliberately **not** committed (see [`docs/security.md`](../../../../docs/security.md)):
+Deliberately **not** committed (secrets / large binaries):
 
 - `.credentials.json` ❌ — your Claude **OAuth token**. Secret.
 - `.claude.json` ❌ — local state: identity + per-project history.

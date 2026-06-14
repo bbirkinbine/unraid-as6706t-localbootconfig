@@ -103,8 +103,8 @@ out and reconfigured through the GUI on a rebuild.
 | `passwd`, `shadow`, `smbpasswd`, `secrets.tdb` | accounts + Samba | ❌ never commit |
 | `ssh/`, `ssl/`, `wireguard/` | private keys | ❌ never commit |
 
-See [security.md](./security.md) for what's deliberately excluded and how to back
-the rest up privately.
+Anything marked ❌ is kept out of this repo; back the secrets up separately
+(Unraid's *Main → Flash → Flash Backup* captures the whole `/boot` privately).
 
 ## The practical upshot
 

@@ -16,6 +16,13 @@ install -m 755 /boot/config/scripts/asustor-lcd.sh /usr/local/sbin/asustor-lcd.s
 install -m 755 /boot/config/scripts/lcd-info.sh    /usr/local/sbin/lcd-info.sh
 /usr/local/sbin/lcd-info.sh start
 
+# --- Per-bay disk-activity LEDs (green front-bay LEDs, via GPIO chardev) ---
+# Unraid's kernel lacks CONFIG_LEDS_GPIO + the disk-activity trigger, so these are driven
+# directly from /proc/diskstats by a small Perl daemon. See docs/disk-leds.md.
+install -m 755 /boot/config/scripts/disk-led.pl /usr/local/sbin/disk-led.pl
+install -m 755 /boot/config/scripts/disk-led.sh /usr/local/sbin/disk-led.sh
+/usr/local/sbin/disk-led.sh start
+
 # --- Persist Claude Code CLI across reboots (RAM root) — DISABLED on boot ---
 # Intentionally not run automatically so it can't interfere with normal boot.
 # To re-establish Claude after a reboot, run by hand:

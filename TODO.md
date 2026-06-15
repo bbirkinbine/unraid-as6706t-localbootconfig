@@ -27,14 +27,3 @@ Checklist:
       `color=yellow` (rebuilding / not-ready) → **amber or blink red**; **gate all on `mdState="STARTED"`** (a stopped array reports parity as `DISK_INVALID` / `yellow-on`, which is not a fault).
 - [ ] Decide SMART-warning and empty-bay behavior (proposed defaults: blink for SMART/`numErrors`, leave empty bays alone).
 - [ ] Document + wire into `go` (same install/start pattern; likely the same daemon, not a new one).
-
-## NVMe disk-activity indicator — on-box verification
-
-**Implemented:** the disk-activity daemon now flickers the front-panel green **status** LED
-(`gpled1`) on aggregate NVMe activity via the LED's hwmon sysfs node — see
-[docs/nvme-activity-led.md](docs/nvme-activity-led.md). The code self-disables cleanly if the
-node isn't writable, so two visual checks were deliberately deferred rather than blocking:
-
-- [ ] Confirm `gpled1` physically lights when toggled (watch the front panel during NVMe I/O,
-      or run the snippet in the doc). If only `gpled1_blink` works, switch to the coarse-blink fallback.
-- [ ] Confirm the real NVMe device count (2 per spec vs 4 mentioned); fix [hardware.md](docs/hardware.md) if it differs.

@@ -6,6 +6,11 @@
 # (/dev/gpiochipN, exposed by the asustor_gpio_it87 driver) and emulates the kernel's
 # "disk-activity" LED trigger in userspace by polling /proc/diskstats.
 #
+# It also repurposes the front-panel green *status* LED (it87_gp47) as a configurable status
+# light - NVMe-activity flicker by default, or forced off / solid-on. It is driven through the
+# same GPIO character device as the bay LEDs (a separate one-line request; GPIO offset 31 on
+# the AS6706T). See docs/nvme-activity-led.md.
+#
 # Why this exists: Unraid's kernel is built WITHOUT CONFIG_LEDS_GPIO and the disk LED
 # triggers (CONFIG_LEDS_TRIGGER_DISK / _BLKDEV), so the in-kernel path that lights these
 # LEDs on other distros simply isn't present. There is also no gpioset (libgpiod), no
@@ -21,6 +26,10 @@
 #   DL_CTL          override control file on tmpfs (bay -> on|off|locate)
 #   DL_LOG          log file on tmpfs
 #   DL_MODE         "sweep" = one-shot identify sweep then exit; otherwise run the daemon
+#   DL_STATUS_LED    green status LED (gp47) mode: nvme = flicker on NVMe I/O (default),
+#                    off = force dark, on = force solid
+#   DL_STATUS_OFFSET GPIO chardev line offset of the status LED (default 31 = it87_gp47)
+#   DL_NVME_REGEX    which /proc/diskstats devices count as NVMe (default = whole namespaces)
 #
 use strict;
 use warnings;
@@ -43,6 +52,7 @@ use constant {
     GPIO_V2_GET_LINE   => 0xC250B407,
     GPIO_V2_SET_VALUES => 0xC010B40F,
     LINE_FLAG_OUTPUT   => 8,            # GPIO_V2_LINE_FLAG_OUTPUT (bit 3)
+    LINE_FLAG_ACTIVE_LOW => 2,         # GPIO_V2_LINE_FLAG_ACTIVE_LOW (bit 1)
 };
 
 sub logmsg {
@@ -91,7 +101,15 @@ my $ALL = (1 << $N) - 1;
 # Set all managed lines at once. bits/mask are indexed by request position (bay i -> bit i-1).
 sub set_bits { defined ioctl($LINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0], $ALL)) or logmsg("SET_VALUES: $!"); }
 
-$SIG{TERM} = $SIG{INT} = sub { eval { set_bits(0) }; exit 0; };
+# Status LED (it87_gp47) line-request fd for the NVMe-activity indicator, or undef when
+# disabled/unavailable. It's driven through the GPIO chardev exactly like the bay LEDs - the
+# IT87 honors this pin's data register (verified on hardware), so it gets true on/off flicker.
+# A separate one-line request (not folded into the bay lines) keeps it out of the bay sweep.
+# Resolved below, after the sweep short-circuit. See docs/nvme-activity-led.md.
+my $SLINE;
+sub sled_set { defined $SLINE and (ioctl($SLINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0] ? 1 : 0, 1)) or logmsg("status SET_VALUES: $!")); }
+
+$SIG{TERM} = $SIG{INT} = sub { eval { set_bits(0); sled_set(0); }; exit 0; };
 
 sub nap { select(undef, undef, undef, $_[0]); }
 
@@ -102,6 +120,36 @@ if ($MODE eq 'sweep') {
     for my $i (0 .. $N - 1) { set_bits(1 << $i); nap(1.2); }
     set_bits(0);
     exit 0;
+}
+
+# Status LED (gp47) setup, skipped above for one-shot sweeps. Request the status-LED line as a
+# second output and apply the chosen mode: 'off'/'on' set it once (the value latches while we
+# hold the line); 'nvme' (default) starts it dark and is then driven per-tick from aggregate
+# NVMe activity in the main loop. On failure, log once and leave $SLINE undef - the bay LEDs are
+# unaffected. (The chip's hardware blink for this LED is disabled in boot/config/go, so it can't
+# override our data-register control.)
+my $nvme_re  = $ENV{DL_NVME_REGEX} // '^nvme[0-9]+n[0-9]+$';
+my $NVME_RE  = qr/$nvme_re/;
+my $LED_MODE = lc($ENV{DL_STATUS_LED} // 'nvme');
+$LED_MODE = 'nvme' unless $LED_MODE eq 'off' || $LED_MODE eq 'on';   # any unknown value -> default
+{
+    my $soff = ($ENV{DL_STATUS_OFFSET} // 31) + 0;
+    # gp47 is ACTIVE-LOW (lights when the pin is driven low - same as the red bay LEDs, and
+    # verified on hardware), so set the uAPI ACTIVE_LOW flag. The kernel then inverts for us:
+    # logical 1 = on (pin low), logical 0 = off (pin high) - so the rest of the code stays plain.
+    my $sreq = pack('L64', $soff, (0) x 63)
+             . pack('a32', 'as6706-status-led')
+             . pack('Q', LINE_FLAG_OUTPUT | LINE_FLAG_ACTIVE_LOW) . pack('L', 0) . pack('L5', (0) x 5) . ("\0" x 240)
+             . pack('L', 1) . pack('L', 0) . pack('L5', (0) x 5) . pack('l', 0);
+    if (defined ioctl($CHIP, GPIO_V2_GET_LINE, $sreq)
+            and open($SLINE, '+<&=', unpack('l', substr($sreq, 588, 4)))) {
+        if    ($LED_MODE eq 'off') { sled_set(0); logmsg("status LED: forced OFF (gp offset $soff)"); }
+        elsif ($LED_MODE eq 'on')  { sled_set(1); logmsg("status LED: forced ON (gp offset $soff)"); }
+        else                       { sled_set(0); logmsg("status LED: NVMe-activity mode (gp offset $soff)"); }  # start dark
+    } else {
+        logmsg("status LED: GET_LINE offset $soff failed ($!) - disabled");
+        undef $SLINE;
+    }
 }
 
 # bay (1..N) -> block device (sdX), resolved by SATA/ata port. A front bay is physically
@@ -145,6 +193,8 @@ my %map        = ();
 my $mapsig     = '';
 my $resolve_in = 0;
 my $tick       = 0;
+my $nvme_prev  = 0; $nvme_prev += $prev{$_} for grep { $_ =~ $NVME_RE } keys %prev;  # baseline NVMe I/O count
+my $sled_on    = -1;                                                                 # -1 => force first write
 
 while (1) {
     if ($resolve_in <= 0) {
@@ -171,6 +221,17 @@ while (1) {
         $bits |= (1 << ($i - 1)) if $on;
     }
     set_bits($bits);
+
+    # NVMe activity -> status LED (nvme mode only; off/on were set once at startup). One LED for
+    # several drives, so aggregate: on when ANY nvme namespace's counter moved since last tick.
+    # Write only on change (a quiet pool issues no writes; a busy one writes at most twice/edge).
+    if (defined $SLINE && $LED_MODE eq 'nvme') {
+        my $sum = 0; $sum += $act{$_} for grep { $_ =~ $NVME_RE } keys %act;
+        my $on  = ($sum != $nvme_prev) ? 1 : 0;
+        if ($on != $sled_on) { sled_set($on); $sled_on = $on; }
+        $nvme_prev = $sum;
+    }
+
     %prev = %act;
     $tick++;
     nap($IVAL);

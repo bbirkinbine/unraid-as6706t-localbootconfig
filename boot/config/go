@@ -6,7 +6,11 @@
 install -m 755 /boot/config/scripts/fan-autocontrol.sh /usr/local/sbin/fan-autocontrol.sh
 /usr/local/sbin/fan-autocontrol.sh start
 
-# --- Disable blinking green status LED (GP47) on Asustor front panel ---
+# --- Front-panel green status LED (it87_gp47): disable its hardware blink ---
+# A fresh Unraid install leaves this LED blinking green (annoying). Disabling the chip's blink
+# here lets the disk-activity daemon (started below) own the pin via the GPIO chardev and drive
+# it - NVMe activity by default, or forced off/solid via STATUS_LED. Must run before the daemon
+# grabs the line, so the chip's blink generator can't fight the daemon's data-register control.
 for f in /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1_blink; do
   [ -w "$f" ] && echo 0 > "$f"
 done

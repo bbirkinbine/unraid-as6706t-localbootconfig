@@ -77,8 +77,10 @@ set of status LEDs. Both hang off the IT8625 GPIO / an internal serial link:
   baud (the "LCM" protocol). See
   [front-panel-lcd.md](./front-panel-lcd.md).
 - The **green status LED** (`gpled1`) blinks by default; the `go` script disables
-  the blink by writing `0` to its `gpled1_blink` sysfs node so it sits solid.
-  See [front-panel-lcd.md](./front-panel-lcd.md).
+  the blink (`gpled1_blink=0`), and the [disk-activity daemon](./disk-leds.md) then
+  repurposes it as an **NVMe-activity** indicator. See
+  [front-panel-lcd.md](./front-panel-lcd.md) and
+  [nvme-activity-led.md](./nvme-activity-led.md).
 
 ## NVMe
 

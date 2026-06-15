@@ -80,6 +80,13 @@ done
 (The glob is used because the exact `asustor_it87.N` and `hwmonN` numbers aren't
 fixed across boots — same defensive pattern as the fan script.)
 
+> **This LED is now repurposed.** The [disk-activity daemon](./disk-leds.md) drives the
+> status-LED pin (`it87_gp47`) directly through the **GPIO chardev** — by default as an
+> aggregate **NVMe-activity** indicator (flickers when the M.2 cache pool is busy), or forced
+> **off** / **solid on** via its `STATUS_LED` setting. The `go` step above is now just a
+> pre-seed that disables the chip's hardware blink so it can't fight the daemon's control.
+> See [nvme-activity-led.md](./nvme-activity-led.md).
+
 ## How it's wired into boot
 
 From [`boot/config/go`](../boot/config/go):

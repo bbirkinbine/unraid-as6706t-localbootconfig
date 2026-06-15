@@ -8,6 +8,11 @@
 # other distros isn't compiled in. This drives the GPIO lines directly and emulates the
 # trigger in userspace.
 #
+# It also drives the front-panel green STATUS LED (it87_gp47): by default an aggregate
+# NVMe-activity light (the internal M.2 slots have no LED of their own), or forced off / solid
+# via STATUS_LED below. Same GPIO chardev mechanism as the bay LEDs. See the STATUS_LED config
+# block and docs/nvme-activity-led.md.
+#
 # The actual line I/O is done by disk-led.pl (pure Perl + core Fcntl) because Unraid's base
 # image has no gpioset/libgpiod, no python, and no compiler - perl is the one capable
 # interpreter present. This wrapper just handles the daemon lifecycle and manual overrides,
@@ -31,6 +36,16 @@ INTERVAL_MS=100                       # activity poll interval (10 Hz). 150-250 
 #   bay1=12  bay2=46  bay3=51  bay4=63  bay5=61  bay6=58
 GREEN_OFFSETS="12 46 51 63 61 58"
 NBAYS=6
+
+# Front-panel green STATUS LED (it87_gp47) - what to do with it. The internal M.2 NVMe slots
+# have no front-panel LED of their own, so by default this LED becomes an aggregate "any NVMe
+# busy?" activity flicker (idle = dark), the same model and the same GPIO chardev mechanism as a
+# bay LED. The daemon holds the line and actively drives it, so "off" is genuinely dark while the
+# daemon runs. (The chip's hardware blink for this LED is disabled in go; if the daemon is
+# stopped the line is released and the LED returns to its solid-on hardware default.)
+STATUS_LED=nvme                       # nvme = flicker on NVMe I/O (default) | off = force dark | on = force solid
+STATUS_OFFSET=31                      # GPIO chardev line offset of the status LED (31 = it87_gp47 on AS6706T)
+NVME_REGEX='^nvme[0-9]+n[0-9]+$'      # /proc/diskstats devices counted as NVMe (whole namespaces)
 
 PIDFILE=/var/run/disk-led.pid
 LOGFILE=/var/log/disk-led.log         # /var/log is tmpfs (RAM) on Unraid - no USB-flash wear
@@ -72,6 +87,7 @@ run_loop() {
   # Wait out the boot race: a gpiochip must exist before the engine can grab lines.
   local i; for i in $(seq 1 30); do ls /dev/gpiochip* >/dev/null 2>&1 && break; sleep 1; done
   export DL_OFFSETS="$GREEN_OFFSETS" DL_INTERVAL_MS="$INTERVAL_MS" DL_CTL="$CTL" DL_LOG="$LOGFILE"
+  export DL_STATUS_LED="$STATUS_LED" DL_STATUS_OFFSET="$STATUS_OFFSET" DL_NVME_REGEX="$NVME_REGEX"
   exec perl "$PL"                     # replaces this process; pidfile stays valid
 }
 
@@ -108,6 +124,13 @@ case "$1" in
     for i in $(seq 1 "$NBAYS"); do
       printf "  bay%d (gpio %-2s) -> %s\n" "$i" "${offs[$((i-1))]}" "${BAYDEV[$i]:-(empty)}"
     done
+    case "${STATUS_LED,,}" in
+      off) echo "led    : status LED forced OFF (gpio offset $STATUS_OFFSET)" ;;
+      on)  echo "led    : status LED forced ON / solid (gpio offset $STATUS_OFFSET)" ;;
+      *)   nv=$(ls -d /sys/block/nvme* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')
+           echo "led    : status LED = NVMe activity (gpio offset $STATUS_OFFSET)"
+           echo "led    :   aggregating ${nv:-(no nvme devices found)}" ;;
+    esac
     if [ -s "$CTL" ]; then echo "overrides:"; sed 's/^/  bay/' "$CTL"; else echo "overrides: none (all bays = activity)"; fi
     ;;
 

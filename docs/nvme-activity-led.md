@@ -28,6 +28,25 @@ green LED on the front is the **status LED** (`gpled1`, GP47), which `go` alread
 neutralized at boot (`gpled1_blink=0`). Pegging that otherwise-static light to NVMe
 activity turns it into useful telemetry at no extra hardware cost.
 
+## Choosing what the LED does (`STATUS_LED`)
+
+Because this hijacks a shared front-panel LED, it's a **setting**, not a fixed behavior —
+set `STATUS_LED` at the top of [`disk-led.sh`](../boot/config/scripts/disk-led.sh):
+
+| `STATUS_LED` | The green status LED… |
+| ------------ | --------------------- |
+| `nvme` *(default)* | flickers on aggregate NVMe activity (idle = dark) |
+| `off` | is forced **dark** |
+| `on` | is forced **solid green** |
+
+The daemon **actively asserts** the chosen state — it writes the value rather than just
+"leaving the LED alone" — so `off` is genuinely dark and `on` genuinely solid *regardless*
+of whatever the LED's power-on resting value happens to be on your firmware. `off` is the
+clean way to keep the pre-feature "no distracting light" behavior without depending on that
+resting state.
+
+The rest of this doc describes the default `nvme` mode.
+
 ## One LED, several drives → an aggregate flicker
 
 A single LED can't show per-drive activity, so the indicator is an **aggregate**: it's on
@@ -50,15 +69,15 @@ interface ([why Perl](./disk-leds.md#why-perl-not-python--gpioset--c)); the stat
 Folded into the existing engine (no second process):
 
 - **At startup** (after the boot race for the GPIO chip, and skipped for one-shot `test`
-  sweeps): resolve `gpled1` by glob and require the value node to be **writable**; write
-  `0` to `gpled1_blink` so the hardware blink can't fight the software toggling. If no
-  writable node is found, log once and leave the indicator off — the bay LEDs are
-  unaffected.
-- **Each tick** (the same ~100 ms loop the bay LEDs use): sum the completed-I/O counters
-  of all matching `nvme*` namespaces in `/proc/diskstats`; if the sum moved since the
-  previous tick → write `1`, else `0`. **Writes happen only on change**, so a quiet pool
-  issues no writes at all and a busy one writes at most twice per flicker edge. A write
-  error self-disables the indicator (logged once) rather than spamming the log.
+  sweeps): resolve `gpled1` by glob, require the value node to be **writable**, and disable
+  its hardware blink (`gpled1_blink=0`). In `off`/`on` mode it writes `0`/`1` once and is
+  done; in `nvme` mode it then drives the LED per-tick (below). If no writable node is
+  found, log once and disable — the bay LEDs are unaffected.
+- **Each tick** (`nvme` mode only; the same ~100 ms loop the bay LEDs use): sum the
+  completed-I/O counters of all matching `nvme*` namespaces in `/proc/diskstats`; if the
+  sum moved since the previous tick → write `1`, else `0`. **Writes happen only on change**,
+  so a quiet pool issues no writes at all and a busy one writes at most twice per flicker
+  edge. A write error self-disables the indicator (logged once) rather than spamming the log.
 - **On stop / exit:** the LED is set to `0` (dark), same clean release as the bay lines.
 
 ## NVMe device selection
@@ -84,9 +103,9 @@ tunables:
 
 | Variable | Value | Meaning |
 | -------- | ----- | ------- |
-| `NVME_ACTIVITY` | `1` | `1` = drive the status LED from NVMe activity; `0` = leave `gpled1` alone (old "solid, not blinking" behavior) |
+| `STATUS_LED` | `nvme` | what the green status LED does: `nvme` = NVMe-activity flicker (default), `off` = forced dark, `on` = forced solid (see [Modes](#choosing-what-the-led-does-status_led)) |
 | `GPLED_GLOB` | `/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1` | the status-LED **value** node (resolved by glob, since `hwmon`/`asustor_it87` numbers shift across boots). The blink node is the same path + `_blink`. |
-| `NVME_REGEX` | `^nvme[0-9]+n[0-9]+$` | which `/proc/diskstats` devices count as NVMe |
+| `NVME_REGEX` | `^nvme[0-9]+n[0-9]+$` | which `/proc/diskstats` devices count as NVMe (only used in `nvme` mode) |
 
 ## Usage
 
@@ -102,22 +121,21 @@ daemon : RUNNING (pid 1234)
 ...
   bay1 (gpio 12) -> sda
   ... (bays 2..6) ...
-nvme   : indicator ON -> green status LED /sys/devices/platform/asustor_it87.0/hwmon/hwmon3/gpled1
-         aggregating: nvme0n1 nvme1n1
+led    : NVMe activity -> /sys/devices/platform/asustor_it87.0/hwmon/hwmon3/gpled1
+led    :   aggregating nvme0n1 nvme1n1
 overrides: none (all bays = activity)
 ```
 
-If the value node can't be found/written, `status` shows
-`green status LED MISSING (no writable gpled1)` and the daemon logs the same to
-`/var/log/disk-led.log` — the bay LEDs keep working regardless.
+In `off`/`on` mode the `led` line reads `forced OFF` / `forced ON (solid)` instead. If the
+value node can't be found/written, it shows `MISSING (no writable gpled1)` and the daemon
+logs the same to `/var/log/disk-led.log` — the bay LEDs keep working regardless.
 
 ## How it's wired into boot
 
 Same install/start as the bay LEDs (from [`go`](../boot/config/go)) — it's the same
 daemon. The one extra detail is the status LED's blink: `go` still pre-seeds
-`gpled1_blink=0` so the LED isn't blinking before the daemon grabs it (and so the old solid
-behavior is preserved if `NVME_ACTIVITY=0`), and the daemon re-asserts `gpled1_blink=0`
-itself when it takes over.
+`gpled1_blink=0` so the LED isn't blinking before the daemon grabs it, and the daemon then
+asserts the `STATUS_LED` mode (re-asserting `gpled1_blink=0` itself) when it takes over.
 
 ## Verifying on the box
 

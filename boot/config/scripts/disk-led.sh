@@ -8,9 +8,9 @@
 # other distros isn't compiled in. This drives the GPIO lines directly and emulates the
 # trigger in userspace.
 #
-# It also repurposes the front-panel green STATUS LED (gpled1) as an aggregate NVMe-activity
-# light, since the internal M.2 slots have no front-panel LED of their own. See the NVMe
-# config block below and docs/nvme-activity-led.md.
+# It also drives the front-panel green STATUS LED (gpled1): by default an aggregate
+# NVMe-activity light (the internal M.2 slots have no LED of their own), or forced off / solid
+# via STATUS_LED below. See the STATUS_LED config block and docs/nvme-activity-led.md.
 #
 # The actual line I/O is done by disk-led.pl (pure Perl + core Fcntl) because Unraid's base
 # image has no gpioset/libgpiod, no python, and no compiler - perl is the one capable
@@ -36,11 +36,12 @@ INTERVAL_MS=100                       # activity poll interval (10 Hz). 150-250 
 GREEN_OFFSETS="12 46 51 63 61 58"
 NBAYS=6
 
-# NVMe activity indicator: also drive the front-panel green STATUS LED (gpled1) from aggregate
-# NVMe I/O - the internal M.2 slots have no front-panel LED of their own. One LED for several
-# drives, so it's an "any NVMe busy?" flicker (idle = dark), same model as a bay LED. Unlike the
-# bay LEDs, gpled1 has a hwmon sysfs node, so it's driven by a plain write (no chardev).
-NVME_ACTIVITY=1                       # 1 = enable; 0 = leave gpled1 alone
+# Front-panel green STATUS LED (gpled1) - what to do with it. The internal M.2 NVMe slots have
+# no front-panel LED of their own, so by default this LED becomes an aggregate "any NVMe busy?"
+# activity flicker (idle = dark), the same model as a bay LED. Unlike the bay LEDs, gpled1 has a
+# hwmon sysfs node, so it's driven by a plain write (no chardev). The daemon actively asserts the
+# chosen state, so "off" is genuinely dark regardless of the LED's power-on resting value.
+STATUS_LED=nvme                       # nvme = flicker on NVMe I/O (default) | off = force dark | on = force solid
 GPLED_GLOB="/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1"  # status-LED value node
 NVME_REGEX='^nvme[0-9]+n[0-9]+$'      # /proc/diskstats devices counted as NVMe (whole namespaces)
 
@@ -84,7 +85,7 @@ run_loop() {
   # Wait out the boot race: a gpiochip must exist before the engine can grab lines.
   local i; for i in $(seq 1 30); do ls /dev/gpiochip* >/dev/null 2>&1 && break; sleep 1; done
   export DL_OFFSETS="$GREEN_OFFSETS" DL_INTERVAL_MS="$INTERVAL_MS" DL_CTL="$CTL" DL_LOG="$LOGFILE"
-  export DL_NVME="$NVME_ACTIVITY" DL_GPLED_GLOB="$GPLED_GLOB" DL_NVME_REGEX="$NVME_REGEX"
+  export DL_STATUS_LED="$STATUS_LED" DL_GPLED_GLOB="$GPLED_GLOB" DL_NVME_REGEX="$NVME_REGEX"
   exec perl "$PL"                     # replaces this process; pidfile stays valid
 }
 
@@ -121,14 +122,14 @@ case "$1" in
     for i in $(seq 1 "$NBAYS"); do
       printf "  bay%d (gpio %-2s) -> %s\n" "$i" "${offs[$((i-1))]}" "${BAYDEV[$i]:-(empty)}"
     done
-    if [ "$NVME_ACTIVITY" = 1 ]; then
-      gp=$(ls $GPLED_GLOB 2>/dev/null | head -1)
-      nv=$(ls -d /sys/block/nvme* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')
-      echo "nvme   : indicator ON -> green status LED ${gp:-MISSING (no writable gpled1)}"
-      echo "         aggregating: ${nv:-(no nvme devices found)}"
-    else
-      echo "nvme   : indicator OFF"
-    fi
+    gp=$(ls $GPLED_GLOB 2>/dev/null | head -1)
+    case "${STATUS_LED,,}" in
+      off) echo "led    : forced OFF -> ${gp:-MISSING (no writable gpled1)}" ;;
+      on)  echo "led    : forced ON (solid) -> ${gp:-MISSING (no writable gpled1)}" ;;
+      *)   nv=$(ls -d /sys/block/nvme* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')
+           echo "led    : NVMe activity -> ${gp:-MISSING (no writable gpled1)}"
+           echo "led    :   aggregating ${nv:-(no nvme devices found)}" ;;
+    esac
     if [ -s "$CTL" ]; then echo "overrides:"; sed 's/^/  bay/' "$CTL"; else echo "overrides: none (all bays = activity)"; fi
     ;;
 

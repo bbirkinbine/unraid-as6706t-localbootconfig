@@ -81,11 +81,10 @@ done
 fixed across boots — same defensive pattern as the fan script.)
 
 > **This LED is now repurposed.** The [disk-activity daemon](./disk-leds.md) drives
-> `gpled1` as an aggregate **NVMe-activity** indicator (flickers when the M.2 cache pool is
-> busy). The `go` step above is now just a pre-seed — it keeps the LED from blinking before
-> the daemon takes over, and preserves the plain "solid, not blinking" behavior if the
-> indicator is disabled (`NVME_ACTIVITY=0`). See
-> [nvme-activity-led.md](./nvme-activity-led.md).
+> `gpled1` — by default as an aggregate **NVMe-activity** indicator (flickers when the M.2
+> cache pool is busy), or forced **off** / **solid on** via its `STATUS_LED` setting. The
+> `go` step above is now just a pre-seed that keeps the LED from blinking before the daemon
+> takes over. See [nvme-activity-led.md](./nvme-activity-led.md).
 
 ## How it's wired into boot
 

@@ -6,9 +6,10 @@
 # (/dev/gpiochipN, exposed by the asustor_gpio_it87 driver) and emulates the kernel's
 # "disk-activity" LED trigger in userspace by polling /proc/diskstats.
 #
-# It also repurposes the front-panel green *status* LED (gpled1) as an aggregate
-# NVMe-activity light. That LED, unlike the bay LEDs, has a hwmon *sysfs* node, so it is
-# driven with a plain file write - no chardev needed. See docs/nvme-activity-led.md.
+# It also repurposes the front-panel green *status* LED (gpled1) as a configurable status
+# light - NVMe-activity flicker by default, or forced off / solid-on. That LED, unlike the
+# bay LEDs, has a hwmon *sysfs* node, so it is driven with a plain file write - no chardev
+# needed. See docs/nvme-activity-led.md.
 #
 # Why this exists: Unraid's kernel is built WITHOUT CONFIG_LEDS_GPIO and the disk LED
 # triggers (CONFIG_LEDS_TRIGGER_DISK / _BLKDEV), so the in-kernel path that lights these
@@ -25,7 +26,8 @@
 #   DL_CTL          override control file on tmpfs (bay -> on|off|locate)
 #   DL_LOG          log file on tmpfs
 #   DL_MODE         "sweep" = one-shot identify sweep then exit; otherwise run the daemon
-#   DL_NVME         1 = also drive the green status LED (gpled1) from aggregate NVMe activity
+#   DL_STATUS_LED   green status LED (gpled1) mode: nvme = flicker on NVMe I/O (default),
+#                   off = force dark, on = force solid
 #   DL_GPLED_GLOB   glob for the gpled1 sysfs value node (hwmon number varies across boots)
 #   DL_NVME_REGEX   which /proc/diskstats devices count as NVMe (default = whole namespaces)
 #
@@ -123,19 +125,26 @@ if ($MODE eq 'sweep') {
     exit 0;
 }
 
-# NVMe activity indicator setup (skipped above for one-shot sweeps, which only borrow the bay
-# lines). gpled1's hwmon path varies across boots, so resolve it by glob and require the value
-# node to be writable; if not, log once and leave $GPLED undef so the feature is simply off.
-my $nvme_re = $ENV{DL_NVME_REGEX} // '^nvme[0-9]+n[0-9]+$';
-my $NVME_RE = qr/$nvme_re/;
-if (($ENV{DL_NVME} // 1) + 0) {
+# Green status LED (gpled1) setup (skipped above for one-shot sweeps, which only borrow the
+# bay lines). Mode is user-chosen: 'nvme' = flicker on NVMe I/O (default), 'off' = force dark,
+# 'on' = force solid. The daemon ACTIVELY asserts the chosen state, so 'off' is genuinely dark
+# regardless of the LED's resting value. gpled1's hwmon path varies across boots, so resolve it
+# by glob and require the value node writable; if not, log once and leave $GPLED undef (the bay
+# LEDs are unaffected). The blink is disabled in every mode so it can't fight us.
+my $nvme_re  = $ENV{DL_NVME_REGEX} // '^nvme[0-9]+n[0-9]+$';
+my $NVME_RE  = qr/$nvme_re/;
+my $LED_MODE = lc($ENV{DL_STATUS_LED} // 'nvme');
+$LED_MODE = 'nvme' unless $LED_MODE eq 'off' || $LED_MODE eq 'on';   # any unknown value -> default
+{
     my $glob = $ENV{DL_GPLED_GLOB} // '/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1';
     ($GPLED) = grep { -w $_ } glob $glob;
     if (defined $GPLED) {
-        open(my $b, '>', "${GPLED}_blink") and do { print $b "0\n"; close $b; };  # blink off, so it can't fight our toggling
-        logmsg("nvme indicator: driving $GPLED");
+        open(my $b, '>', "${GPLED}_blink") and do { print $b "0\n"; close $b; };   # blink off
+        if    ($LED_MODE eq 'off') { gpled_write(0); logmsg("status LED: forced OFF ($GPLED)"); }
+        elsif ($LED_MODE eq 'on')  { gpled_write(1); logmsg("status LED: forced ON ($GPLED)"); }
+        else                       { logmsg("status LED: NVMe-activity mode ($GPLED)"); }  # nvme (default)
     } else {
-        logmsg("nvme indicator: no writable gpled1 (glob=$glob) - disabled");
+        logmsg("status LED: no writable gpled1 (glob=$glob) - disabled");
     }
 }
 
@@ -209,10 +218,11 @@ while (1) {
     }
     set_bits($bits);
 
-    # NVMe activity -> green status LED. One LED for several drives, so aggregate: on when ANY
-    # nvme namespace's counter moved since last tick. Write only on change (a quiet pool issues
-    # no writes at all; a busy one writes at most twice per flicker edge).
-    if (defined $GPLED) {
+    # NVMe activity -> green status LED (only in 'nvme' mode; 'off'/'on' were asserted once at
+    # startup). One LED for several drives, so aggregate: on when ANY nvme namespace's counter
+    # moved since last tick. Write only on change (a quiet pool issues no writes at all; a busy
+    # one writes at most twice per flicker edge).
+    if (defined $GPLED && $LED_MODE eq 'nvme') {
         my $sum = 0; $sum += $act{$_} for grep { $_ =~ $NVME_RE } keys %act;
         my $on  = ($sum != $nvme_prev) ? 1 : 0;
         if ($on != $gpled_on) { gpled_write($on); $gpled_on = $on; }

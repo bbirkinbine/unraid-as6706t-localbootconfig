@@ -80,6 +80,13 @@ done
 (The glob is used because the exact `asustor_it87.N` and `hwmonN` numbers aren't
 fixed across boots — same defensive pattern as the fan script.)
 
+> **This LED is now repurposed.** The [disk-activity daemon](./disk-leds.md) drives
+> `gpled1` as an aggregate **NVMe-activity** indicator (flickers when the M.2 cache pool is
+> busy). The `go` step above is now just a pre-seed — it keeps the LED from blinking before
+> the daemon takes over, and preserves the plain "solid, not blinking" behavior if the
+> indicator is disabled (`NVME_ACTIVITY=0`). See
+> [nvme-activity-led.md](./nvme-activity-led.md).
+
 ## How it's wired into boot
 
 From [`boot/config/go`](../boot/config/go):

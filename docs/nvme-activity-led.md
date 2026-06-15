@@ -1,169 +1,148 @@
-# NVMe disk-activity indicator (green status LED) — design & research (future work)
+# NVMe disk-activity indicator (green status LED)
 
-> **Status: planned, not implemented.** This captures the research and proposed design
-> so it can be built later. Tracked in [TODO.md](../TODO.md). It extends the working
-> [disk-activity green-LED daemon](./disk-leds.md).
+Part of the [disk-activity LED daemon](./disk-leds.md) — same scripts
+([`disk-led.sh`](../boot/config/scripts/disk-led.sh) lifecycle /
+[`disk-led.pl`](../boot/config/scripts/disk-led.pl) engine), installed + started by
+[`go`](../boot/config/go).
 
-The goal: repurpose the front-panel green **status** LED — the one `go` currently
-neutralizes at boot — to **flicker on NVMe activity**, so the internal M.2 cache pool
-gets the same at-a-glance activity telemetry the six SATA bays already have.
+Repurposes the front-panel green **status** LED (`gpled1`, GP47) as an aggregate
+**NVMe-activity** light. The internal M.2 NVMe slots have no front-panel LED of their own,
+so everything that hits the NVMe cache pool — the BTRFS write cache, the mover's source
+reads, Docker/appdata, any VMs — was invisible on the front panel even though it's often
+the busiest storage in the box. Now that one green LED flickers whenever any NVMe is busy,
+the same way the six bay LEDs flicker for the SATA disks. It also loosely echoes ADM,
+where the green status LED blinks during system activity.
 
-## Why the NVMe slots have no activity light today
+> **One remaining check, deferred by choice.** The engine drives `gpled1` through its
+> hwmon **sysfs value node** and self-disables cleanly if that node is absent or rejects
+> writes — so shipping it is safe regardless. What hasn't been eyeballed yet is whether the
+> LED *physically* lights when toggled on this box. See
+> [Verifying on the box](#verifying-on-the-box).
 
-The six front bays each have a green LED that the
-[disk-activity daemon](./disk-leds.md) drives from `/proc/diskstats`. The internal
-**M.2 NVMe slots have no dedicated front-panel LED at all** — they sit behind the
-chassis with no tray and no light pipe. So everything that hits the NVMe cache pool —
-the BTRFS write cache, the mover's source reads, Docker/appdata, any VMs — is
-**completely invisible on the front panel**, even though it's often the busiest storage
-in the box.
+## Why the NVMe slots had no light
 
-There is exactly **one spare, repurposable green LED** on the front: the **status LED**
-(`gpled1`, GP47), which the `go` script currently neutralizes:
-
-```bash
-# from boot/config/go
-for f in /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1_blink; do
-  [ -w "$f" ] && echo 0 > "$f"
-done
-```
-
-Pegging that otherwise-static LED to aggregate NVMe activity turns a light that conveys
-nothing dynamic into useful telemetry — and it loosely echoes ADM, where the green
-system-status LED blinks during system activity.
-
-## Current behavior of the status LED (confirm on box)
-
-`go` writes `0` to `gpled1_blink`. Per [front-panel-lcd.md](./front-panel-lcd.md) this
-disables the *blink* so the LED **sits solid**; in practice it's recalled as sitting
-**off**. Either way it conveys nothing dynamic today, so repurposing it loses no
-information. **The exact resting state (solid vs off) should be confirmed on the box**,
-since the indicator replaces whatever that resting state currently is.
-
-The mechanism difference that matters: this LED is controlled through **hwmon sysfs**
-(`/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1*`) — *not* through the GPIO
-character device the bay LEDs use. The bay LEDs needed Perl + the chardev precisely
-*because* they have no `/sys` interface ([why Perl](./disk-leds.md#why-perl-not-python--gpioset--c)).
-The status LED **does** have one, so this indicator can be a plain sysfs write — simpler
-than the bay-LED path, not harder.
+The six front bays each have a green LED the [daemon](./disk-leds.md) drives from
+`/proc/diskstats`. The internal **M.2 NVMe slots have no dedicated front-panel LED** —
+they sit behind the chassis with no tray and no light pipe. The only spare, repurposable
+green LED on the front is the **status LED** (`gpled1`, GP47), which `go` already
+neutralized at boot (`gpled1_blink=0`). Pegging that otherwise-static light to NVMe
+activity turns it into useful telemetry at no extra hardware cost.
 
 ## One LED, several drives → an aggregate flicker
 
-A single LED can't show per-drive activity, so the indicator is necessarily an
-**aggregate**: "did *any* NVMe namespace do I/O this tick?" That's the same flicker model
-as one bay LED, just OR'd across every `nvme*` device.
+A single LED can't show per-drive activity, so the indicator is an **aggregate**: it's on
+when *any* `nvme*` namespace did I/O this tick, off otherwise. That's the same flicker
+model as one bay LED, just OR'd across every NVMe device:
 
-Chosen behavior (see the design question that settled it):
-
-- **Idle → dark.** When no NVMe is doing I/O, the LED is off.
+- **Idle → dark.** No NVMe I/O ⇒ LED off.
 - **Activity → flicker.** Any NVMe I/O in a tick lights it for that tick.
 
-This mirrors exactly how the six bay LEDs already behave, so the whole front panel reads
-consistently: dark = quiet, flicker = working.
+So the whole front panel reads consistently: dark = quiet, flicker = working.
 
-## Mechanism (proposed): sysfs toggle, not the chardev
+## How it works
 
-Because `gpled1` is exposed via hwmon sysfs, the natural engine is a per-tick sysfs
-write — no `ioctl`, no chardev line request:
+The key difference from the bay LEDs: `gpled1` is controlled through **hwmon sysfs**
+(`/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1`), not the GPIO character
+device. The bay LEDs needed Perl + the chardev precisely *because* they have no `/sys`
+interface ([why Perl](./disk-leds.md#why-perl-not-python--gpioset--c)); the status LED
+*does* have one, so this rides along as a plain file write — simpler, not harder.
 
-1. **Once at startup:** write `0` to `gpled1_blink` so the hardware blink can't fight our
-   software toggling (this subsumes the current `go` step).
-2. **Each tick:** if any `nvme*` counter changed since the previous tick → `echo 1 >
-   gpled1`; otherwise → `echo 0 > gpled1`. **Write only when the state changes**, so a
-   quiet pool issues no writes at all and a busy one writes at most twice per flicker.
+Folded into the existing engine (no second process):
 
-Properties carry over from the existing daemon:
-
-- **No USB-flash wear.** `gpled1*` are driver/hwmon attributes, not files on `/boot`.
-- **Spin-down safe.** It reads only `/proc/diskstats` (in-kernel counters), so it never
-  touches a disk — and NVMe doesn't spin down anyway.
-- **Negligible cost.** It reuses the activity poll the daemon already runs; the only
-  addition is one conditional sysfs write per state change.
-
-## Open question (blocks the final design): does `gpled1` accept direct on/off?
-
-The plan above assumes a **writable value node** — i.e. `gpled1` itself takes `1`/`0` —
-alongside the known `gpled1_blink`. This must be confirmed on the box, the same way the
-fault-LED design is blocked on the amber-blend test.
-
-**Quick test (daemon for the bay LEDs can stay running — this only touches `gpled1`):**
-
-```bash
-# find the node
-ls /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1*
-g=$(ls /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1 | head -1)
-echo 0 > "${g}_blink"            # make sure hardware blink is off
-echo 1 > "$g"; sleep 2           # should go solid green
-echo 0 > "$g"; sleep 2           # should go dark
-```
-
-- **It toggles** → use the sysfs path above. Done.
-- **Only `gpled1_blink` is writable (no value node)** → fall back to one of:
-  - **(a) Coarse "recent-activity" mode.** Enable `gpled1_blink` whenever NVMe was active
-    in the last few seconds, disable it when idle. Loses fine per-tick flicker but still
-    signals "the cache pool is busy," using only the node we know exists.
-  - **(b) Drive it on the GPIO chardev** like the bay LEDs. This needs the status LED's
-    chardev **line offset**, which must be *discovered, not assumed*: the driver's
-    `GP47` name does **not** necessarily equal chardev offset 47 (offset 47 is already the
-    bay-2 *red* line in the [fault-LED map](./disk-fault-leds.md)), and the driver may
-    already claim the status LED as a managed LED, leaving its line unavailable on the
-    chardev. More work and more fragile than sysfs — only if (a) won't do.
-
-## Where it lives (proposed): fold into the existing daemon
-
-Extend the *same* daemon rather than adding a second process — the same call the
-[fault-LED design](./disk-fault-leds.md#proposed-implementation) makes:
-
-- **`disk-led.pl`** already reads `/proc/diskstats` every ~100 ms and already sees the
-  `nvme*` rows in its activity map (it doesn't filter them out). Add: compute the
-  NVMe-aggregate "changed?" boolean each tick and drive `gpled1` via sysfs (write-on-change).
-- **`disk-led.sh`** gains the config (enable flag, the `gpled1` sysfs glob, the NVMe
-  device regex) and reports the indicator's state in `status`.
-- **`go`** — the daemon now *owns* `gpled1`, so its startup re-asserts `gpled1_blink=0`
-  itself; the standalone `gpled1_blink` loop in `go` becomes redundant and can be removed
-  (or left as a harmless pre-seed). Document the hand-off either way.
-
-Rationale: one process, one `/proc/diskstats` read per tick already happening, and the
-bay greens keep doing their thing on the same loop — the NVMe indicator is just one more
-output of it.
+- **At startup** (after the boot race for the GPIO chip, and skipped for one-shot `test`
+  sweeps): resolve `gpled1` by glob and require the value node to be **writable**; write
+  `0` to `gpled1_blink` so the hardware blink can't fight the software toggling. If no
+  writable node is found, log once and leave the indicator off — the bay LEDs are
+  unaffected.
+- **Each tick** (the same ~100 ms loop the bay LEDs use): sum the completed-I/O counters
+  of all matching `nvme*` namespaces in `/proc/diskstats`; if the sum moved since the
+  previous tick → write `1`, else `0`. **Writes happen only on change**, so a quiet pool
+  issues no writes at all and a busy one writes at most twice per flicker edge. A write
+  error self-disables the indicator (logged once) rather than spamming the log.
+- **On stop / exit:** the LED is set to `0` (dark), same clean release as the bay lines.
 
 ## NVMe device selection
 
-- Match **whole namespaces** in `/proc/diskstats` — `^nvme\d+n\d+$` — and exclude
-  partitions (`...p1`) so the match is clean. (For a boolean "any activity" even
-  partitions wouldn't hurt, but the whole-namespace match is tidier.)
-- **Count:** the AS6706T ships with **2 × M.2 NVMe** slots per spec
-  ([hardware.md](./hardware.md)); there may be more in this box (an M.2 expansion or
-  different layout was mentioned). The daemon **enumerates `nvme*` dynamically**, so the
-  count doesn't change the design — but the actual devices/count should be confirmed on
-  the box and `hardware.md` corrected if it really is 4.
+Matches **whole namespaces** in `/proc/diskstats` — `^nvme[0-9]+n[0-9]+$` — which excludes
+partitions (`...p1`). Devices are enumerated dynamically every tick, so the **count
+doesn't matter to the design**: the AS6706T ships with **2 × M.2 NVMe** per spec
+([hardware.md](./hardware.md)), but if this box actually has more, they're picked up
+automatically. (Confirm the real count on the box and fix `hardware.md` if it differs.)
 
-## Proposed tunables
+## Properties (inherited from the daemon)
 
-At the top of [`disk-led.sh`](../boot/config/scripts/disk-led.sh), alongside the existing
-ones:
+- **No USB-flash wear.** `gpled1*` are driver/hwmon attributes, not files on `/boot`.
+- **Spin-down safe.** Only `/proc/diskstats` is read (in-kernel counters) — no disk is
+  touched, and NVMe doesn't spin down anyway.
+- **Negligible cost.** The diskstats read already happens for the bay LEDs; this adds one
+  conditional sysfs write per flicker edge. No measurable heat or fan-curve impact.
 
-| Variable | Proposed default | Meaning |
-| -------- | ---------------- | ------- |
-| `NVME_ACTIVITY` | `1` | enable the NVMe-activity status-LED indicator |
-| `GPLED_GLOB` | `/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1` | the status-LED value node (resolved by glob, like the existing defensive patterns) |
+## Tunables
+
+At the top of [`disk-led.sh`](../boot/config/scripts/disk-led.sh), alongside the bay-LED
+tunables:
+
+| Variable | Value | Meaning |
+| -------- | ----- | ------- |
+| `NVME_ACTIVITY` | `1` | `1` = drive the status LED from NVMe activity; `0` = leave `gpled1` alone (old "solid, not blinking" behavior) |
+| `GPLED_GLOB` | `/sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1` | the status-LED **value** node (resolved by glob, since `hwmon`/`asustor_it87` numbers shift across boots). The blink node is the same path + `_blink`. |
 | `NVME_REGEX` | `^nvme[0-9]+n[0-9]+$` | which `/proc/diskstats` devices count as NVMe |
 
-## Cost
+## Usage
 
-Negligible, and strictly less than the bay-LED work it rides along with: it adds nothing
-to the poll (the diskstats read already happens) and at most one sysfs write per flicker
-edge. No disk I/O, no flash wear, no measurable heat or fan-curve impact — the same
-profile as [disk-leds.md](./disk-leds.md#resource-cost).
+There's nothing to run — the indicator is part of the daemon and starts with it. The state
+shows up in `status`:
 
-## Checklist
+```bash
+disk-led.sh status
+```
 
-(Also tracked in [TODO.md](../TODO.md).)
+```
+daemon : RUNNING (pid 1234)
+...
+  bay1 (gpio 12) -> sda
+  ... (bays 2..6) ...
+nvme   : indicator ON -> green status LED /sys/devices/platform/asustor_it87.0/hwmon/hwmon3/gpled1
+         aggregating: nvme0n1 nvme1n1
+overrides: none (all bays = activity)
+```
 
-- [ ] Confirm which physical LED `gpled1`/GP47 is and its current resting state (solid vs off) on the box.
-- [ ] Confirm `gpled1` accepts a direct `1`/`0` value write (vs only `gpled1_blink`) — settles sysfs vs chardev.
-- [ ] Confirm the NVMe device names/count (2 vs 4); correct [hardware.md](./hardware.md) if needed.
-- [ ] Extend `disk-led.pl`: NVMe-aggregate activity → drive `gpled1` (write-on-change; `gpled1_blink=0` first).
-- [ ] Extend `disk-led.sh`: `NVME_ACTIVITY` / `GPLED_GLOB` / `NVME_REGEX` config + show the indicator in `status`.
-- [ ] Reconcile the `go` `gpled1_blink=0` step with the daemon now owning the LED.
-- [ ] Document (flip this doc to "implemented") + add the README rows + the boot-wiring note.
+If the value node can't be found/written, `status` shows
+`green status LED MISSING (no writable gpled1)` and the daemon logs the same to
+`/var/log/disk-led.log` — the bay LEDs keep working regardless.
+
+## How it's wired into boot
+
+Same install/start as the bay LEDs (from [`go`](../boot/config/go)) — it's the same
+daemon. The one extra detail is the status LED's blink: `go` still pre-seeds
+`gpled1_blink=0` so the LED isn't blinking before the daemon grabs it (and so the old solid
+behavior is preserved if `NVME_ACTIVITY=0`), and the daemon re-asserts `gpled1_blink=0`
+itself when it takes over.
+
+## Verifying on the box
+
+The deferred check is purely visual — does writing `1`/`0` to `gpled1` actually light the
+LED? Watch the front panel during NVMe I/O (e.g. while the mover runs or a large write
+lands on the cache pool); it should flicker green. To test the node directly without the
+daemon:
+
+```bash
+g=$(ls /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1 | head -1)
+echo 0 > "${g}_blink"            # hardware blink off
+echo 1 > "$g"; sleep 2           # expect: solid green
+echo 0 > "$g"; sleep 2           # expect: dark
+```
+
+If the LED **doesn't** respond (e.g. only `gpled1_blink` is writable, no value node), the
+indicator self-disables and the fallbacks noted in the
+[original design](#nvme-disk-activity-indicator-green-status-led) apply: a coarse
+"blink while recently active" mode using `gpled1_blink`, or driving the LED on the GPIO
+chardev like the bay LEDs (its line offset would have to be discovered — the driver's
+`GP47` name is not necessarily chardev offset 47, which is already the bay-2 *red* line).
+
+## Prerequisite
+
+Like everything else here, the `gpled1` hwmon node only exists if the **Asustor platform
+driver** is installed — see [asustor-platform-driver.md](./asustor-platform-driver.md). If
+`disk-led.sh status` reports the LED as `MISSING`, that driver isn't loaded (or the value
+node isn't named `gpled1` on your firmware — adjust `GPLED_GLOB`).

@@ -6,7 +6,10 @@
 install -m 755 /boot/config/scripts/fan-autocontrol.sh /usr/local/sbin/fan-autocontrol.sh
 /usr/local/sbin/fan-autocontrol.sh start
 
-# --- Disable blinking green status LED (GP47) on Asustor front panel ---
+# --- Front-panel green status LED (gpled1 / GP47): disable its hardware blink ---
+# The disk-activity daemon (started below) repurposes this LED as an aggregate NVMe-activity
+# light and re-asserts blink=0 itself; this pre-seed just keeps it from blinking before the
+# daemon grabs it, and preserves the old "solid, not blinking" behavior if NVME_ACTIVITY=0.
 for f in /sys/devices/platform/asustor_it87.*/hwmon/hwmon*/gpled1_blink; do
   [ -w "$f" ] && echo 0 > "$f"
 done

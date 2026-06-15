@@ -106,6 +106,7 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | [front-panel-lcd.md](docs/front-panel-lcd.md) | the LCD scripts + the status-LED tweak |
 | [disk-leds.md](docs/disk-leds.md) | the per-bay disk-activity LED daemon (and why it's Perl) |
 | [disk-fault-leds.md](docs/disk-fault-leds.md) | _(planned)_ red/fault LEDs from Unraid disk state — see [TODO.md](TODO.md) |
+| [nvme-activity-led.md](docs/nvme-activity-led.md) | _(planned)_ NVMe activity on the green status LED — see [TODO.md](TODO.md) |
 | [claude-cli-persistence.md](docs/claude-cli-persistence.md) | persisting the Claude Code CLI |
 | [restore-guide.md](docs/restore-guide.md) | **how to redeploy these scripts after a reinstall** |
 

@@ -136,3 +136,10 @@ Released under the [MIT License](LICENSE).
 ## Acknowledgements
 
 This project was developed with the assistance of AI tools.
+
+## The hardware
+
+![Asustor Lockerstor 6 Gen 2 (AS6706T) running Unraid with this repo's scripts enabled, showing the front-panel LCD and status LEDs active](asustor-as6706t.jpg)
+
+The AS6706T running Unraid with these scripts enabled — the front-panel LCD and
+the status/fault LEDs are driven by the daemons in this repo.

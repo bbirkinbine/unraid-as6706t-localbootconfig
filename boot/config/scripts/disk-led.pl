@@ -30,6 +30,11 @@
 #                    off = force dark, on = force solid
 #   DL_STATUS_OFFSET GPIO chardev line offset of the status LED (default 31 = it87_gp47)
 #   DL_NVME_REGEX    which /proc/diskstats devices count as NVMe (default = whole namespaces)
+#   DL_RED_OFFSETS   space-separated GPIO offsets for bay1..bayN red/fault LEDs (active-low)
+#   DL_FAULT_POLL_MS how often to re-read Unraid disk state for faults, in ms (default 15000)
+#   DL_DISKS_INI     Unraid per-disk state file (default /var/local/emhttp/disks.ini)
+#   DL_VAR_INI       Unraid array state file, for mdState (default /var/local/emhttp/var.ini)
+#   DL_FAULT_3STATE  reserved: 1 = amber/3-state warnings (not implemented; 2-state only)
 #
 use strict;
 use warnings;
@@ -41,6 +46,15 @@ my $IVAL = (($ENV{DL_INTERVAL_MS} // 100) + 0) / 1000;
 my $CTL  = $ENV{DL_CTL} // '/dev/shm/disk-led.ctl';
 my $LOG  = $ENV{DL_LOG};
 my $MODE = $ENV{DL_MODE} // '';
+
+# Red/fault LED config. The six bay red LEDs are active-LOW (raw 0 = lit). We drive them from
+# Unraid's disk-fault state to mirror ADM's solid-red failed tray. See docs/disk-fault-leds.md.
+my @ROFF         = split ' ', ($ENV{DL_RED_OFFSETS} // '13 47 52 48 62 60');
+my $RN           = scalar @ROFF;
+my $FAULT_MS     = ($ENV{DL_FAULT_POLL_MS} // 15000) + 0;
+my $DISKS_INI    = $ENV{DL_DISKS_INI} // '/var/local/emhttp/disks.ini';
+my $VAR_INI      = $ENV{DL_VAR_INI}   // '/var/local/emhttp/var.ini';
+my $FAULT_3STATE = ($ENV{DL_FAULT_3STATE} // 0) + 0;   # reserved (amber); 2-state for now
 
 # GPIO character-device uAPI (v2) ioctl request codes for x86_64. Computed from
 # linux/gpio.h and validated live on this hardware.
@@ -97,7 +111,8 @@ my $req = pack('L64', @OFF, (0) x (64 - $N))
 defined ioctl($CHIP, GPIO_V2_GET_LINE, $req) or do { logmsg("FATAL: GET_LINE ioctl: $!"); die "GET_LINE: $!"; };
 open(my $LINE, '+<&=', unpack('l', substr($req, 588, 4))) or die "fdopen line fd: $!";
 
-my $ALL = (1 << $N) - 1;
+my $ALL  = (1 << $N) - 1;
+my $RALL = (1 << $RN) - 1;
 # Set all managed lines at once. bits/mask are indexed by request position (bay i -> bit i-1).
 sub set_bits { defined ioctl($LINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0], $ALL)) or logmsg("SET_VALUES: $!"); }
 
@@ -109,7 +124,13 @@ sub set_bits { defined ioctl($LINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0], $ALL))
 my $SLINE;
 sub sled_set { defined $SLINE and (ioctl($SLINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0] ? 1 : 0, 1)) or logmsg("status SET_VALUES: $!")); }
 
-$SIG{TERM} = $SIG{INT} = sub { eval { set_bits(0); sled_set(0); }; exit 0; };
+# Fault (red) LED line-request fd, or undef when disabled/unavailable. Active-low (set via the
+# uAPI ACTIVE_LOW flag, like the status LED), so logical 1 = lit and the code stays plain. A
+# separate request keeps the active-low reds out of the active-high green bay request.
+my $RLINE;
+sub rled_set { defined $RLINE and (ioctl($RLINE, GPIO_V2_SET_VALUES, pack('QQ', $_[0], $RALL)) or logmsg("red SET_VALUES: $!")); }
+
+$SIG{TERM} = $SIG{INT} = sub { eval { set_bits(0); sled_set(0); rled_set(0); }; exit 0; };
 
 sub nap { select(undef, undef, undef, $_[0]); }
 
@@ -152,6 +173,25 @@ $LED_MODE = 'nvme' unless $LED_MODE eq 'off' || $LED_MODE eq 'on';   # any unkno
     }
 }
 
+# Fault (red) LED setup, skipped above for one-shot sweeps. Request the six red lines as a single
+# active-low output group (raw 0 = lit) and start them dark. On failure, log once and leave $RLINE
+# undef - the green bays and status LED are unaffected, and fault indication is simply disabled.
+{
+    my $rreq = pack('L64', @ROFF, (0) x (64 - $RN))
+             . pack('a32', 'as6706-fault-led')
+             . pack('Q', LINE_FLAG_OUTPUT | LINE_FLAG_ACTIVE_LOW) . pack('L', 0) . pack('L5', (0) x 5) . ("\0" x 240)
+             . pack('L', $RN) . pack('L', 0) . pack('L5', (0) x 5) . pack('l', 0);
+    if (defined ioctl($CHIP, GPIO_V2_GET_LINE, $rreq)
+            and open($RLINE, '+<&=', unpack('l', substr($rreq, 588, 4)))) {
+        rled_set(0);   # all reds off to start
+        logmsg("fault LEDs: offsets @ROFF (active-low) ready");
+        logmsg("fault LEDs: 3-state requested but not implemented - using 2-state") if $FAULT_3STATE;
+    } else {
+        logmsg("fault LEDs: GET_LINE failed ($!) - red/fault indication disabled");
+        undef $RLINE;
+    }
+}
+
 # bay (1..N) -> block device (sdX), resolved by SATA/ata port. A front bay is physically
 # wired to an ata port, so bay i maps to ata i; we then look up whichever sdX currently
 # sits on that port. Keyed on the ata number (not the drive letter) so it survives sd*
@@ -187,6 +227,46 @@ sub read_ctl {
     return %o;
 }
 
+# Per-bay fault state from Unraid's emhttp files (disks.ini + var.ini). Refreshed on a slow
+# cadence - faults change slowly, and these are small tmpfs files, so this never touches the
+# disks and stays spin-down safe. A bay is faulted iff its disk's `color` is red-* (Unraid's
+# DISK_DSBL / red-X disabled drive). Gated on mdState=STARTED: a stopped array reports parity as
+# DISK_INVALID/yellow-on, which is NOT a fault. Returns a 1-based array ($f[bay] = 0|1). This is
+# the strict 2-state ADM model - yellow/warning states are intentionally not surfaced here.
+sub poll_faults {
+    my $mref = shift;                       # ata-number => sdX
+    my @f = (0) x ($RN + 1);                # 1-based by bay; [0] unused
+    open(my $v, '<', $VAR_INI) or return @f;
+    my $started = 0;
+    while (<$v>) { if (/^mdState\s*=\s*"?([^"\r\n]+)"?/) { $started = ($1 eq 'STARTED'); last; } }
+    close $v;
+    return @f unless $started;              # array stopped -> nothing is a fault
+
+    my %color;                              # sdX => color (e.g. "red-on")
+    if (open(my $d, '<', $DISKS_INI)) {
+        my ($dev, $col, $st);
+        my $flush = sub {
+            return if !defined $dev || $dev eq '' || !defined $col;
+            return if defined $st && $st =~ /_NP$/;     # skip missing/not-present slots
+            $color{$dev} = $col;
+        };
+        while (<$d>) {
+            if (/^\[/) { $flush->(); ($dev, $col, $st) = (undef, undef, undef); next; }
+            if    (/^device\s*=\s*"?([^"\r\n]*)"?/) { ($dev = $1) =~ s{^/dev/}{}; }
+            elsif (/^color\s*=\s*"?([^"\r\n]*)"?/)  { $col = $1; }
+            elsif (/^status\s*=\s*"?([^"\r\n]*)"?/) { $st  = $1; }
+        }
+        $flush->();
+        close $d;
+    }
+    for my $i (1 .. $RN) {
+        my $sd = $mref->{$i} // next;
+        my $c  = $color{$sd} // next;
+        $f[$i] = 1 if (split /-/, $c)[0] eq 'red';
+    }
+    return @f;
+}
+
 logmsg("started: chip=$cpath ($cname) bays=$N interval=" . int($IVAL * 1000) . "ms");
 my %prev       = read_act();
 my %map        = ();
@@ -195,6 +275,10 @@ my $resolve_in = 0;
 my $tick       = 0;
 my $nvme_prev  = 0; $nvme_prev += $prev{$_} for grep { $_ =~ $NVME_RE } keys %prev;  # baseline NVMe I/O count
 my $sled_on    = -1;                                                                 # -1 => force first write
+my @fault       = (0) x ($RN + 1);                          # 1-based per-bay fault state (slow poll)
+my $fault_in    = 0;                                        # ticks until next fault poll (0 => now)
+my $FAULT_TICKS = int($FAULT_MS / ($IVAL * 1000)) || 1;     # activity ticks per fault poll
+my $red_bits    = -1;                                       # last red bitmask written (-1 => force)
 
 while (1) {
     if ($resolve_in <= 0) {
@@ -205,22 +289,38 @@ while (1) {
     }
     $resolve_in--;
 
+    # Refresh per-bay fault state on the slow cadence (cheap file reads, no disk I/O). The red
+    # lines themselves are written every tick below, so manual red-tests stay responsive.
+    if ($RLINE && $fault_in <= 0) {
+        @fault = poll_faults(\%map);
+        $fault_in = $FAULT_TICKS;
+    }
+    $fault_in--;
+
     my %act = read_act();
     my %ovr = read_ctl();
-    my $bits = 0;
+    my $bits  = 0;     # green (active-high) bitmask
+    my $rbits = 0;     # red   (active-low, logical 1 = lit) bitmask
     for my $i (1 .. $N) {
-        my $on   = 0;
-        my $mode = $ovr{$i};
-        if    (defined $mode && $mode eq 'on')     { $on = 1; }
+        my $mode   = $ovr{$i};
+        my $red_on = $fault[$i] || (defined $mode && $mode eq 'red');   # disk fault or manual red-test
+        my $on     = 0;
+        if    ($red_on)                            { $on = 0; }         # faulted bay: red only, green off
+        elsif (defined $mode && $mode eq 'on')     { $on = 1; }
         elsif (defined $mode && $mode eq 'off')    { $on = 0; }
         elsif (defined $mode && $mode eq 'locate') { $on = (($tick % 4) < 2) ? 1 : 0; }  # ~2.5 Hz blink
         else {
             my $d = $map{$i};
             if (defined $d) { my $c = $act{$d} // 0; $on = ($c != ($prev{$d} // $c)) ? 1 : 0; }
         }
-        $bits |= (1 << ($i - 1)) if $on;
+        $bits  |= (1 << ($i - 1)) if $on;
+        $rbits |= (1 << ($i - 1)) if $red_on;
     }
     set_bits($bits);
+    if ($RLINE && $rbits != $red_bits) {
+        rled_set($rbits); $red_bits = $rbits;
+        logmsg("red LEDs: bays=" . (join(',', grep { $rbits & (1 << ($_ - 1)) } 1 .. $N) || 'none'));
+    }
 
     # NVMe activity -> status LED (nvme mode only; off/on were set once at startup). One LED for
     # several drives, so aggregate: on when ANY nvme namespace's counter moved since last tick.

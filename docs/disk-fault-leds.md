@@ -1,76 +1,145 @@
-# Per-bay red / fault LEDs — design & research (future work)
+# Per-bay red / fault LEDs (disk-error indication)
 
-> **Status: planned, not implemented.** This captures the research and proposed design
-> so it can be built later. Tracked in [TODO.md](../TODO.md). It extends the working
-> [disk-activity green-LED daemon](./disk-leds.md).
+Scripts: [`boot/config/scripts/disk-led.sh`](../boot/config/scripts/disk-led.sh) (lifecycle/control)
+and [`boot/config/scripts/disk-led.pl`](../boot/config/scripts/disk-led.pl) (the GPIO engine) —
+the **same** daemon that drives the green activity LEDs, extended to also drive the reds.
 
-The goal: light each bay's **red** LED when that disk is in a fault/error condition,
-the way Asustor's ADM does natively — so a failed drive's bay is obvious at a glance.
+Lights each bay's **red** LED when Unraid has **disabled** that bay's disk (the red-X /
+`DISK_DSBL` state), mirroring how Asustor's ADM lights a failed drive's tray red so the disk to
+replace is obvious at a glance. On stock Unraid these red lines sit dark (same kernel gap as the
+greens — see [disk-leds.md](./disk-leds.md)), so a failed drive otherwise gives **no front-panel
+indication at all**.
 
-## How ADM does it natively
+## Behavior (what it does)
 
-On ADM the red tray LED means a **drive access error / failure**. When a disk fails (or
-a RAID volume goes degraded), the failed bay's tray LED turns **solid red** to mark
-which disk to replace, and the system status LED flashes **red+green**.
-([Asustor: what the LEDs mean](https://www.asustor.com/en/knowledge/detail/?group_id=602))
+Strict **2-state, ADM-faithful** scheme per bay:
 
-## How Unraid exposes disk faults
+| Bay state | LED |
+| --------- | --- |
+| Normal | **green** (disk-activity flicker, as before) |
+| Disk disabled / failed | **solid red** (green flicker suppressed on that bay) |
 
-Unraid's canonical "bad drive" is the **disabled / red-X** state (`status="DISK_DSBL"`):
-a write failed, so Unraid drops the disk from the array and emulates it from parity
-until it's rebuilt. Alongside that it tracks per-disk read/write **error counts**,
-**SMART** health, and temperature.
+There is intentionally **no amber / warning state** — that matches ADM's trays, which are
+effectively green-vs-red. Yellow/rebuilding/SMART-warning states are **not** surfaced on the bay
+LED (see *Design decisions* below). Amber/3-state remains a clearly-scoped optional future
+(`DL_FAULT_3STATE`, not implemented) — see the last section.
 
-All of it is in **`/var/local/emhttp/disks.ini`** (one section per slot), refreshed by
-emhttp. The authoritative decision logic is Unraid's own
+## How ADM uses the red bay LED (the behavior we mirror)
+
+Confirmed against ASUSTOR's official documentation for this product family:
+
+- **Drive-tray LED → solid RED = "an access error is detected on a hard drive."**
+  ([ASUSTOR online help — Drive](https://www.asustor.com/en/online/online_help?id=30))
+- **Normal = green**, which also flickers on activity; in hibernation the tray LED "flashes once
+  every 10 seconds."
+- The **system status LED** flashes red+green when a drive failure degrades the volume.
+  ([What do the LEDs on my NAS mean?](https://www.asustor.com/en/knowledge/detail/?group_id=602))
+
+Net: ADM's per-tray model is **green (normal/activity) vs solid red (failure)** — no per-tray
+amber. That is exactly what we implement.
+
+## How Unraid exposes disk faults (the source of truth)
+
+Confirmed against Unraid's own
 [`dynamix monitor`](https://github.com/limetech/dynamix/blob/master/plugins/dynamix/scripts/monitor)
-script, which keys off the per-disk **`color`** field (`strtok(color,'-')`):
+decision logic and a live capture on this box (Unraid 7.3.1, kernel 6.18.33-Unraid):
 
-| `color` | meaning | Unraid alert level |
-| ------- | ------- | ------------------ |
-| `green-*` | normal | — |
-| `yellow-*` | not ready / content being reconstructed / parity-sync in progress | **warning** |
-| `red-*` | error state (disabled / `DISK_DSBL`) | **alert** |
+All per-slot state lives in **`/var/local/emhttp/disks.ini`** (one section per slot), refreshed by
+emhttp. The authoritative fault signal is the per-disk **`color`** field; `monitor` keys off
+`strtok(color,'-')`:
 
-Supporting signals:
+| `color` | meaning | Unraid alert level | our bay LED |
+| ------- | ------- | ------------------ | ----------- |
+| `green-*` | normal | — | green (activity) |
+| `yellow-*` | not ready / reconstructing / parity-sync | warning | **(ignored — no amber)** |
+| `red-*` | disabled / `DISK_DSBL` | alert | **solid red** |
 
-- **`numErrors`** — per-disk read/write error counter; `>0` is flagged even before a disk is fully disabled.
-- **SMART health** — cached by the monitor at `/var/local/emhttp/smart/<name>` (look for the overall-health `PASSED`/`FAILED` line). Read the cache rather than running `smartctl` (or use `smartctl -n standby -H` so a spun-down disk isn't woken).
-- **Array state** — `mdState` in `/var/local/emhttp/var.ini`.
+- `monitor` skips `flash` and any slot whose `status` ends in `_NP` (missing/not-present). We do
+  the same — an absent/missing slot is not lit red.
+- Array state is **`mdState`** in `/var/local/emhttp/var.ini`.
 
 ### Important nuance: a stopped array is not a fault
 
-Captured live with the array **stopped**, the two parity disks read as
-`status="DISK_INVALID"` / `color="yellow-on"` — purely because the array is stopped, not
-because anything is wrong. So the fault logic **must gate on `mdState="STARTED"`**, or
-every array stop would light the parity bays amber.
+Captured live with the array **stopped**, the two parity disks read as `status="DISK_INVALID"` /
+`color="yellow-on"` — purely because the array is stopped, not because anything is wrong. The fault
+logic therefore **gates on `mdState="STARTED"`**; a stopped array lights nothing. (It would not have
+lit anyway under the strict `red-*`-only rule, but the gate is explicit and cheap.)
 
-## Bay → Unraid slot mapping (live, this box)
+## Design decisions
 
-Joins cleanly to the existing bay→`sdX` map (bay N ↔ ata N):
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Behavior model | **Strict 2-state** (green / solid-red) | Matches ADM's actual tray behavior; needs no bi-color amber test. |
+| What lights red | **Disabled drive only** (`strtok(color,'-') eq 'red'`, i.e. `DISK_DSBL`) | Unraid's canonical "bad drive"; high-confidence, low false-positive. `numErrors`/SMART are not used to light red. |
+| Green on a faulted bay | **Suppressed** (red only) | Matches ADM (a failed tray is solid red), and avoids any green+red blend on bi-color bays. |
+| Yellow / rebuild / SMART | **Not shown on the bay** | Same as ADM trays; keeps the panel unambiguous. |
+| Array stopped | **All reds off** (`mdState != STARTED`) | A stopped array is not a fault. |
 
-| Bay | Device | Unraid slot |
-| --- | ------ | ----------- |
-| 1 | sda | parity |
-| 2 | sdb | parity2 |
-| 3 | sdc | disk1 |
-| 4 | sdd | disk2 |
-| 5 | sde | disk3 |
-| 6 | sdf | disk4 |
+## Bay → LED → Unraid slot mapping (this box)
 
-(The `cache`/`cache2` NVMe devices are the M.2 slots, not front bays.)
+Joins cleanly to the existing bay→`sdX` ata-port map (bay N ↔ ata N), so it follows the physical
+bay, not the `sdX` letter:
 
-## Open question — is "yellow" even available? (blocks the final design)
+| Bay | Green offset (active-high) | Red offset (active-low) | SATA | Device@capture | Unraid slot |
+| --- | -------------------------- | ----------------------- | ---- | -------------- | ----------- |
+| 1 | 12 | 13 | ata1 | sda | parity |
+| 2 | 46 | 47 | ata2 | sdb | parity2 |
+| 3 | 51 | 52 | ata3 | sdc | disk1 |
+| 4 | 63 | 48 | ata4 | sdd | disk2 |
+| 5 | 61 | 62 | ata5 | sde | disk3 |
+| 6 | 58 | 60 | ata6 | sdf | disk4 |
 
-There is no dedicated amber line. **Amber is only possible if each bay's green and red
-are a single bi-color LED sharing one light pipe** — then driving both at once blends to
-amber, giving a true 3-state scheme. If they're discrete, we're limited to green or red
-per bay. The mafredri driver hints these "sometimes appear as one," so it's plausible,
-but it must be confirmed visually.
+The red lines are **active-low** (raw `0` = lit). The engine sets the uAPI `ACTIVE_LOW` flag on the
+red line-request (exactly as it already does for the front status LED), so logical `1` = lit and the
+rest of the code stays plain. (The `cache`/`cache2` NVMe devices are the M.2 slots, not front bays.)
 
-**Test (run with the array idle):** briefly own one bay's two lines and drive green,
-then red, then both — and look. Green=12 (active-high, `1`=on), red=13 (active-low,
-`0`=on) for bay 1:
+## How it works, in one paragraph
+
+The engine requests the six red lines as a **separate** active-low line-request (kept out of the
+active-high green request) and holds them for its lifetime. On a **slow ~15 s cadence**
+(`FAULT_POLL_MS`) it reads `var.ini` (`mdState`) and `disks.ini`, joins each bay's `sdX` to its
+`color`, and caches a per-bay fault flag — a bay is faulted iff its disk's `color` is `red-*` and the
+array is `STARTED`. Every 100 ms tick it then writes the red lines (only on change) from that cached
+flag OR'd with any manual `fault-test` override, and **suppresses the green activity bit** for any
+faulted bay so it shows red only. The fault check never touches the disks (small tmpfs `.ini` files
+only), so it stays spin-down safe and adds negligible cost on top of the activity loop.
+
+## Tunables
+
+At the top of [`disk-led.sh`](../boot/config/scripts/disk-led.sh):
+
+| Variable | Value | Meaning |
+| -------- | ----- | ------- |
+| `RED_OFFSETS` | `13 47 52 48 62 60` | bay 1→6 red-LED GPIO offsets (active-low) |
+| `FAULT_POLL_MS` | `15000` | how often to re-read Unraid disk state (faults change slowly) |
+| `DISKS_INI` | `/var/local/emhttp/disks.ini` | per-disk state (overridable for testing) |
+| `VAR_INI` | `/var/local/emhttp/var.ini` | array state, for `mdState` (overridable for testing) |
+| `FAULT_3STATE` | `0` | reserved: amber/3-state warnings (not implemented) |
+
+## Usage / verification
+
+`disk-led.sh status` now shows the array state and, per bay, the green+red GPIO offsets, the mapped
+`sdX`, its Unraid `color`, and a `<== FAULT (red)` marker when disabled.
+
+```bash
+disk-led.sh status               # per-bay color + fault state + mdState
+disk-led.sh fault-test N [secs]  # force bay N's RED on (green off) to verify the red lines
+```
+
+`fault-test` is the safe hardware check — no real disk failure needed. It forces a bay solid red
+(green off) via the tmpfs override file; `disk-led.sh auto N` clears it. Run `fault-test 1` … `6`
+and confirm each bay lights red left→right and its green goes dark.
+
+To validate the fault *logic* without a failure, point the daemon at crafted state files via
+`DL_DISKS_INI` / `DL_VAR_INI` containing `color="red-on"` for one slot and `mdState="STARTED"`, and
+confirm the matching bay goes red within one poll; then verify a `STOPPED` `mdState` lights nothing.
+
+## Optional future: amber / 3-state warnings
+
+A richer scheme would add a **warning** state (rebuilding / SMART / read-errors → amber) between
+green and red. There is **no dedicated amber line**: amber is only possible if each bay's green+red
+is a single **bi-color LED** that blends when both are driven. That needs a one-time visual check,
+run with the array idle:
 
 ```perl
 # perl /tmp/yellow-test.pl  (stop the daemon first so it frees the green line)
@@ -90,23 +159,9 @@ set(1,1); sleep 4;   # both -> amber?
 set(0,0);
 ```
 
-- **Amber** → 3-state: green = healthy, **amber = warning**, red = failed.
-- **Discrete** → 2-state: green vs red, using **solid red = failed**, **blink red = warning**.
+- **Amber** → a true 3-state (green = healthy, amber = warning, red = failed) becomes possible.
+- **Discrete** → fall back to solid-red = failed, **blink**-red = warning.
 
-## Proposed implementation
-
-Extend the *same* daemon (no second process):
-
-1. Also request the six red lines (`13 47 52 48 62 60`) in the line request. They're
-   **active-low**, so either set the per-line `ACTIVE_LOW` flag in the uAPI config or
-   invert in software (raw `0` = on).
-2. On a **slow** cadence (~15 s — fault state changes slowly, unlike activity), read
-   `disks.ini` + `var.ini`, and for each bay look up its disk by `device`.
-3. Drive per bay (only when `mdState="STARTED"`):
-   - `color=red` / `DISK_DSBL` / `numErrors>0` / SMART `FAILED` → **solid red**
-   - `color=yellow` (rebuilding / not-ready) → **amber** (if bi-color) or **blink red**
-   - otherwise → red off
-4. Greens keep doing activity on the 100 ms loop exactly as today.
-
-Cost stays negligible: the fault check is a 15 s poll of two small tmpfs `.ini` files
-(plus the cached SMART files) — it never touches the disks, so it stays spin-down safe.
+If pursued, gate it behind `FAULT_3STATE=1` (the daemon already reads `DL_FAULT_3STATE` and logs that
+3-state is requested but not implemented), mapping `color=yellow-*` → amber/blink. The current 2-state
+build does **not** require this test.

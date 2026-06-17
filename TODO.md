@@ -22,8 +22,8 @@ Done:
 
 Remaining (on-hardware, deploy to nas2):
 
-- [ ] Run `disk-led.sh fault-test 1..6` on the box and confirm each bay lights red left→right with green off.
-- [ ] Confirm a real/forced `DISK_DSBL` lights the correct bay and clears on rebuild.
+- [x] Run `disk-led.sh fault-test 1..6` on the box — confirmed each bay lights red **left→right** with green off (verified on NAS-OFFSITE, 2026-06-17). Red offsets `13 47 52 48 62 60` are now hardware-verified, not just from the driver table.
+- [ ] Confirm a real/forced `DISK_DSBL` lights the correct bay and clears on rebuild (will trigger naturally; not simulated on the live data array).
 
 ## Optional future — amber / 3-state warnings
 

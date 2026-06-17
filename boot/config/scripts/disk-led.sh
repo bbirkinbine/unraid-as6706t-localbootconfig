@@ -24,6 +24,7 @@
 #   disk-led.sh locate N [secs]      # blink bay N to find a drive (clears after secs, if given)
 #   disk-led.sh on N | off N         # force bay N's green LED on/off
 #   disk-led.sh auto [N|all]         # clear override(s) -> back to activity mode
+#   disk-led.sh fault-test N [secs]  # force bay N's RED on (green off) to verify the fault LEDs
 #
 # --------------------------------------------------------------------------------------
 # CONFIG
@@ -36,6 +37,18 @@ INTERVAL_MS=100                       # activity poll interval (10 Hz). 150-250 
 #   bay1=12  bay2=46  bay3=51  bay4=63  bay5=61  bay6=58
 GREEN_OFFSETS="12 46 51 63 61 58"
 NBAYS=6
+
+# Red (fault) LED GPIO line offsets, bay 1..6 LEFT->RIGHT, ACTIVE-LOW (raw 0 = lit). Verified on
+# this hardware and against the driver's AS6706 table:
+#   bay1=13  bay2=47  bay3=52  bay4=48  bay5=62  bay6=60
+# Driven from Unraid's disk-fault state to mirror ADM's solid-red failed tray (docs/disk-fault-leds.md):
+# a bay goes SOLID RED when its disk is disabled (color=red-*, i.e. DISK_DSBL), and its green
+# activity flicker is suppressed while red. Strict 2-state (no amber) - faithful to the ADM trays.
+RED_OFFSETS="13 47 52 48 62 60"
+FAULT_POLL_MS=15000                   # how often to re-read Unraid disk state (faults change slowly)
+DISKS_INI=/var/local/emhttp/disks.ini # Unraid per-disk state (overridable for testing)
+VAR_INI=/var/local/emhttp/var.ini     # Unraid array state, for mdState (overridable for testing)
+FAULT_3STATE=0                        # reserved: 1 = amber/warning 3-state (not implemented)
 
 # Front-panel green STATUS LED (it87_gp47) - what to do with it. The internal M.2 NVMe slots
 # have no front-panel LED of their own, so by default this LED becomes an aggregate "any NVMe
@@ -82,12 +95,29 @@ resolve_baydev() {
   done
 }
 
+# Print the Unraid `color` (e.g. red-on / green-on) for a given device (sdX) from disks.ini,
+# or nothing if not found. Order-independent within a slot: accumulate device+color per [section]
+# and emit at the section boundary. Read-only and tmpfs-only - never touches the disk.
+disk_color() {
+  local want=$1
+  [ -r "$DISKS_INI" ] || return 0
+  awk -v want="$want" '
+    function flush() { if (d==want && c!="") print c; d=""; c="" }
+    /^\[/      { flush() }
+    /^device=/ { v=$0; gsub(/.*device="?|".*/,"",v); sub(/^\/dev\//,"",v); d=v }
+    /^color=/  { v=$0; gsub(/.*color="?|".*/,"",v); c=v }
+    END        { flush() }
+  ' "$DISKS_INI" | head -n1
+}
+
 run_loop() {
   [ -r "$PL" ] || { log "FATAL: engine $PL not found"; exit 1; }
   # Wait out the boot race: a gpiochip must exist before the engine can grab lines.
   local i; for i in $(seq 1 30); do ls /dev/gpiochip* >/dev/null 2>&1 && break; sleep 1; done
   export DL_OFFSETS="$GREEN_OFFSETS" DL_INTERVAL_MS="$INTERVAL_MS" DL_CTL="$CTL" DL_LOG="$LOGFILE"
   export DL_STATUS_LED="$STATUS_LED" DL_STATUS_OFFSET="$STATUS_OFFSET" DL_NVME_REGEX="$NVME_REGEX"
+  export DL_RED_OFFSETS="$RED_OFFSETS" DL_FAULT_POLL_MS="$FAULT_POLL_MS" DL_FAULT_3STATE="$FAULT_3STATE"
+  export DL_DISKS_INI="$DISKS_INI" DL_VAR_INI="$VAR_INI"
   exec perl "$PL"                     # replaces this process; pidfile stays valid
 }
 
@@ -119,10 +149,18 @@ case "$1" in
     echo "engine : $PL"
     echo "chip   : $( [ -e /dev/gpiochip0 ] && echo present || echo 'MISSING - is asustor_gpio_it87 loaded?')"
     echo "poll   : ${INTERVAL_MS}ms"
+    md=$(awk -F'"' '/^mdState=/{print $2}' "$VAR_INI" 2>/dev/null)
+    if [ "$md" = STARTED ]; then echo "array  : mdState=STARTED"
+    else echo "array  : mdState=${md:-unknown} (fault LEDs gated off until STARTED)"; fi
     resolve_baydev
-    read -ra offs <<< "$GREEN_OFFSETS"
+    read -ra goffs <<< "$GREEN_OFFSETS"
+    read -ra roffs <<< "$RED_OFFSETS"
     for i in $(seq 1 "$NBAYS"); do
-      printf "  bay%d (gpio %-2s) -> %s\n" "$i" "${offs[$((i-1))]}" "${BAYDEV[$i]:-(empty)}"
+      dev=${BAYDEV[$i]:-}
+      col=""; [ -n "$dev" ] && [ "$md" = STARTED ] && col=$(disk_color "$dev")
+      flt=""; [ "${col%%-*}" = red ] && flt="  <== FAULT (red)"
+      printf "  bay%d (g%-2s r%-2s) -> %-7s %s%s\n" \
+        "$i" "${goffs[$((i-1))]}" "${roffs[$((i-1))]}" "${dev:-(empty)}" "${col:+color=$col}" "$flt"
     done
     case "${STATUS_LED,,}" in
       off) echo "led    : status LED forced OFF (gpio offset $STATUS_OFFSET)" ;;
@@ -166,5 +204,15 @@ case "$1" in
     clear_override "${2:-all}"; echo "override cleared for ${2:-all} -> activity mode"
     ;;
 
-  *) echo "Usage: $0 {start|stop|restart|status|run|test|locate N [secs]|on N|off N|auto [N|all]}"; exit 1 ;;
+  fault-test)
+    # Force a bay's RED LED on (and green off) via the override file, to verify the red lines /
+    # offsets / active-low on real hardware without an actual disk failure. Clears after secs if given.
+    valid_bay "$2" || { echo "usage: $0 fault-test N [secs]   (N = 1..$NBAYS)"; exit 1; }
+    is_running || { echo "daemon not running - start it first (a one-shot can't hold an LED)"; exit 1; }
+    set_override "$2" red
+    if [ -n "$3" ]; then echo "bay $2 forced RED (green off) for ${3}s"; sleep "$3"; clear_override "$2"; echo "cleared"
+    else echo "bay $2 forced RED (green off) - run '$0 auto $2' to clear"; fi
+    ;;
+
+  *) echo "Usage: $0 {start|stop|restart|status|run|test|locate N [secs]|on N|off N|auto [N|all]|fault-test N [secs]}"; exit 1 ;;
 esac

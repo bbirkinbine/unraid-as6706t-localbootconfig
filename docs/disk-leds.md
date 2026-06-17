@@ -68,8 +68,9 @@ disk side is resolved at runtime from the ata port (so it follows the physical b
 | 5 | 61 | ata5 | `sde` |
 | 6 (rightmost) | 58 | ata6 | `sdf` |
 
-The red fault LEDs (`sataN:red:disk`, active-low) are deliberately **left untouched** — the
-daemon only requests the six green lines.
+The red fault LEDs (`sataN:red:disk`, active-low, offsets `13 47 52 48 62 60`) are driven by the
+**same daemon** from Unraid's disk-fault state — a bay goes solid red when its disk is disabled
+(`DISK_DSBL`), mirroring ADM. See [disk-fault-leds.md](./disk-fault-leds.md).
 
 ## What it does, in one paragraph
 
@@ -118,7 +119,10 @@ disk-led.sh test             # identify sweep: all on, then bay 1..6 in turn
 disk-led.sh locate N [secs]  # blink bay N to find a drive (auto-clears after secs, if given)
 disk-led.sh on N | off N     # force bay N's green LED on/off
 disk-led.sh auto [N|all]     # clear override(s) -> back to activity mode
+disk-led.sh fault-test N [s] # force bay N's RED on (green off) to verify the fault LEDs
 ```
+
+The red/fault LEDs are driven by the same daemon — see [disk-fault-leds.md](./disk-fault-leds.md).
 
 - PID file: `/var/run/disk-led.pid`
 - Log: `/var/log/disk-led.log` (tmpfs)

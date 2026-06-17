@@ -92,6 +92,7 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | **Custom fan control** | A dependency-free bash daemon that drives the single AS6706T fan from a *blend* of CPU + NVMe + HDD temps (highest-wins, smoothed, spin-down aware). Replaces Dynamix Auto Fan Control, which is HDD-temp-only. | [fan-control.md](docs/fan-control.md) |
 | **Front-panel LCD** | Shows live IP / CPU temp / fan RPM on the front LCD. | [front-panel-lcd.md](docs/front-panel-lcd.md) |
 | **Per-bay disk-activity LEDs** | Lights the six green front-bay LEDs from real disk activity — Unraid's kernel omits `CONFIG_LEDS_GPIO` + the disk-activity trigger, so a pure-Perl daemon drives the GPIO lines and emulates it from `/proc/diskstats`. The same daemon also drives the front-panel green **status** LED — **NVMe**-activity flicker by default, or forced off/solid (the M.2 slots have no LED of their own). | [disk-leds.md](docs/disk-leds.md) · [nvme-activity-led.md](docs/nvme-activity-led.md) |
+| **Per-bay red / fault LEDs** | The same daemon lights a bay **solid red** when Unraid disables that disk (`DISK_DSBL`), suppressing its green flicker — mirroring how ADM marks a failed tray. Reads `disks.ini`/`var.ini` on a slow poll, gated on `mdState="STARTED"`; strict 2-state (no amber). | [disk-fault-leds.md](docs/disk-fault-leds.md) |
 | **Asustor platform driver** | The community plugin + the `it87` blacklist that provide `asustor_it87` (the IT8625 fan/PWM chip), LEDs, and LCD — the foundation everything else builds on. | [asustor-platform-driver.md](docs/asustor-platform-driver.md) |
 | **Claude CLI persistence** | Keeps the Claude Code CLI (binary + login + settings) alive across Unraid's RAM-root reboots via a store on `/boot` + symlinks. | [claude-cli-persistence.md](docs/claude-cli-persistence.md) |
 
@@ -105,7 +106,7 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | [fan-control.md](docs/fan-control.md) | the custom fan controller in depth |
 | [front-panel-lcd.md](docs/front-panel-lcd.md) | the LCD scripts + the status-LED tweak |
 | [disk-leds.md](docs/disk-leds.md) | the per-bay disk-activity LED daemon (and why it's Perl) |
-| [disk-fault-leds.md](docs/disk-fault-leds.md) | _(planned)_ red/fault LEDs from Unraid disk state — see [TODO.md](TODO.md) |
+| [disk-fault-leds.md](docs/disk-fault-leds.md) | per-bay red/fault LEDs from Unraid disk state (same daemon) |
 | [nvme-activity-led.md](docs/nvme-activity-led.md) | NVMe activity on the front-panel green status LED (same daemon) |
 | [claude-cli-persistence.md](docs/claude-cli-persistence.md) | persisting the Claude Code CLI |
 | [restore-guide.md](docs/restore-guide.md) | **how to redeploy these scripts after a reinstall** |

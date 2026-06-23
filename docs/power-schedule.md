@@ -254,6 +254,11 @@ powers off once the last job has been done for 30 min → arms the next 23:45 wa
 on the way down. If the big 02:00 job is still transferring at 03:00, the
 watchdog sees the traffic and waits.
 
+Note that `STAY_UP_UNTIL`, `IDLE_SHUTDOWN_MIN`, and `THRESH_KBPS` are written out
+even though they equal the script's built-in defaults. That's deliberate: pinning
+them in the conf keeps this box's policy visible in one place and means it won't
+silently change if a future version of the script ever ships different defaults.
+
 ## BIOS: surviving a real power outage
 
 The CMOS battery keeps the RTC (and a pending alarm) running through a brief

@@ -31,12 +31,15 @@ ENABLED=1
 DRY_RUN=1                 # 1 = observe only (logs "WOULD power off"); set 0 for real shutdowns
 WAKE_TIMES="2345"         # 24h HHMM local time (2345 = 11:45 PM). Several: "2345 0530".
                           # '23:45' is accepted too; bad/out-of-range times are rejected at start.
-POWEROFF_MODE=idle
+POWEROFF_MODE=idle        # idle = power off once quiet, after STAY_UP_UNTIL
 
-# The rest already default to these values - uncomment only to change them:
-#STAY_UP_UNTIL="0300"     # earliest a shutdown may happen
-#IDLE_SHUTDOWN_MIN=30     # idle minutes past that before powering off
-#THRESH_KBPS=100          # NIC rx+tx below this (KB/s) = idle
+# Idle-mode policy. These happen to equal the script's built-in defaults, but pin them HERE
+# explicitly: this box's behaviour stays visible in one file and won't drift if a future version
+# of power-schedule.sh ever changes a default.
+STAY_UP_UNTIL="0300"      # earliest local time a shutdown may happen
+IDLE_SHUTDOWN_MIN=30      # power off after this many idle minutes (past STAY_UP_UNTIL)
+THRESH_KBPS=100           # NIC rx+tx below this (KB/s) counts as idle - tune to your backup speed
+#BUSY_PORTS="445 873 2049"  # attached-client ports counted as busy; add 22 for rsync-over-ssh
 
 
 # ============================================================================

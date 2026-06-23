@@ -1,0 +1,74 @@
+# power-schedule.conf.example - site config for power-schedule.sh
+#
+# ##########################################################################
+# #  FIRST, verify Unraid's clock:  Settings -> Date and Time -> Time zone #
+# #                                                                        #
+# #  WAKE_TIMES / STAY_UP_UNTIL / POWEROFF_AT are LOCAL wall-clock times   #
+# #  in that zone. Unraid defaults to UTC and does NOT auto-detect your    #
+# #  location, so a wrong zone makes the box wake/sleep at the wrong       #
+# #  real-world hour. Confirm on the box:                                  #
+# #      date     # must print YOUR local time + zone (e.g. EDT), not UTC  #
+# ##########################################################################
+#
+# Copy this file to  /boot/config/power-schedule.conf  and you're done: the ACTIVE
+# block below is already set up for this repo's box (a secondary/offsite Unraid NAS).
+# Leave DRY_RUN=1 for the first night to watch it, then change it to 0.
+#
+# APPLYING CHANGES: the daemon reads this file only at startup. After ANY edit here,
+# run   power-schedule.sh restart   to apply it (a reboot applies it too). 'status'
+# prints a CHANGED: line when the file differs from the running daemon.
+#
+#   cp /boot/config/scripts/power-schedule.conf.example /boot/config/power-schedule.conf
+#
+# (Sourced by bash: VAR=value, no spaces around '='. The live conf is gitignored.)
+
+# ============================================================================
+#  ACTIVE - secondary / offsite NAS
+#  Wake at 23:45 (just before the 00:00 backup); after 03:00, power off once it
+#  has been idle 30 min; re-arm the next 23:45 wake on the way down.
+# ============================================================================
+ENABLED=1
+DRY_RUN=1                 # 1 = observe only (logs "WOULD power off"); set 0 for real shutdowns
+WAKE_TIMES="2345"         # 24h HHMM local time (2345 = 11:45 PM). Several: "2345 0530".
+                          # '23:45' is accepted too; bad/out-of-range times are rejected at start.
+POWEROFF_MODE=idle        # idle = power off once quiet, after STAY_UP_UNTIL
+
+# Idle-mode policy. These happen to equal the script's built-in defaults, but pin them HERE
+# explicitly: this box's behaviour stays visible in one file and won't drift if a future version
+# of power-schedule.sh ever changes a default.
+STAY_UP_UNTIL="0300"      # earliest local time a shutdown may happen
+IDLE_SHUTDOWN_MIN=30      # power off after this many idle minutes (past STAY_UP_UNTIL)
+THRESH_KBPS=100           # NIC rx+tx below this (KB/s) counts as idle - tune to your backup speed
+#BUSY_PORTS="445 873 2049"  # attached-client ports counted as busy; add 22 for rsync-over-ssh
+
+
+# ============================================================================
+#  OTHER PRESETS - ignore unless adapting for a different box. To use one,
+#  comment out the ACTIVE block above and uncomment a preset here.
+# ============================================================================
+
+# -- Fixed off-time (predictable), but never cut a live transfer --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_TIMES="2345"
+#POWEROFF_MODE=fixed
+#POWEROFF_AT="0500"
+#FIXED_FORCE=0            # 1 = power off at 05:00 even mid-transfer
+
+# -- Wake via RTC, but let the push job power it off (ssh root@nas power-schedule.sh off) --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_TIMES="0145"
+#POWEROFF_MODE=none
+
+# -- No RTC wake: WoL or a BIOS power-on schedule wakes it; this only does the idle off --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_EXTERNAL=1
+#POWEROFF_MODE=idle
+
+# -- Multiple wake windows in a day --
+#WAKE_TIMES="0145 1330"
+
+# -- rsync-over-ssh pushes: also treat port 22 connections as "busy" --
+#BUSY_PORTS="445 873 2049 22"

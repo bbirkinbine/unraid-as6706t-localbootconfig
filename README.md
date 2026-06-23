@@ -55,6 +55,8 @@ boot/config/
 │   ├── lcd-info.sh            # LCD daemon: live IP + CPU temp + fan RPM
 │   ├── disk-led.sh            # per-bay disk-activity LED daemon (lifecycle/control)
 │   ├── disk-led.pl            #   └─ its GPIO-chardev engine (pure Perl, no deps)
+│   ├── power-schedule.sh      # opt-in: scheduled power-off + RTC self-wake engine (off by default)
+│   ├── power-schedule.conf.example  #   └─ site config template (live conf is gitignored)
 │   └── claude-persist.sh      # keep the Claude Code CLI alive across reboots
 └── claude/conf/
     └── settings.json          # Claude CLI settings (theme only; secrets excluded)
@@ -93,6 +95,7 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | **Front-panel LCD** | Shows live IP / CPU temp / fan RPM on the front LCD. | [front-panel-lcd.md](docs/front-panel-lcd.md) |
 | **Per-bay disk-activity LEDs** | Lights the six green front-bay LEDs from real disk activity — Unraid's kernel omits `CONFIG_LEDS_GPIO` + the disk-activity trigger, so a pure-Perl daemon drives the GPIO lines and emulates it from `/proc/diskstats`. The same daemon also drives the front-panel green **status** LED — **NVMe**-activity flicker by default, or forced off/solid (the M.2 slots have no LED of their own). | [disk-leds.md](docs/disk-leds.md) · [nvme-activity-led.md](docs/nvme-activity-led.md) |
 | **Per-bay red / fault LEDs** | The same daemon lights a bay **solid red** when Unraid disables that disk (`DISK_DSBL`), suppressing its green flicker — mirroring how ADM marks a failed tray. Reads `disks.ini`/`var.ini` on a slow poll, gated on `mdState="STARTED"`; strict 2-state (no amber). | [disk-fault-leds.md](docs/disk-fault-leds.md) |
+| **Scheduled power-off + RTC self-wake** *(opt-in)* | A general engine that lets a secondary/offsite NAS power itself **off** when idle and **wake itself** via the CMOS RTC alarm for its backup window — always re-arming the next wake first so it can't strand itself. Selectable wake times and power-off modes (`idle` / `fixed` / external). **Ships inert** (`ENABLED=0`, not started from `go`); the per-machine schedule lives in a gitignored config. | [power-schedule.md](docs/power-schedule.md) |
 | **Asustor platform driver** | The community plugin + the `it87` blacklist that provide `asustor_it87` (the IT8625 fan/PWM chip), LEDs, and LCD — the foundation everything else builds on. | [asustor-platform-driver.md](docs/asustor-platform-driver.md) |
 | **Claude CLI persistence** | Keeps the Claude Code CLI (binary + login + settings) alive across Unraid's RAM-root reboots via a store on `/boot` + symlinks. | [claude-cli-persistence.md](docs/claude-cli-persistence.md) |
 
@@ -108,6 +111,7 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 | [disk-leds.md](docs/disk-leds.md) | the per-bay disk-activity LED daemon (and why it's Perl) |
 | [disk-fault-leds.md](docs/disk-fault-leds.md) | per-bay red/fault LEDs from Unraid disk state (same daemon) |
 | [nvme-activity-led.md](docs/nvme-activity-led.md) | NVMe activity on the front-panel green status LED (same daemon) |
+| [power-schedule.md](docs/power-schedule.md) | scheduled power-off + RTC self-wake for the offsite backup window |
 | [claude-cli-persistence.md](docs/claude-cli-persistence.md) | persisting the Claude Code CLI |
 | [restore-guide.md](docs/restore-guide.md) | **how to redeploy these scripts after a reinstall** |
 

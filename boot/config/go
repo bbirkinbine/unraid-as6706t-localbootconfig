@@ -27,6 +27,15 @@ install -m 755 /boot/config/scripts/disk-led.pl /usr/local/sbin/disk-led.pl
 install -m 755 /boot/config/scripts/disk-led.sh /usr/local/sbin/disk-led.sh
 /usr/local/sbin/disk-led.sh start
 
+# --- Scheduled power-off + RTC self-wake — DISABLED on boot (opt-in, site-specific) ---
+# Lets a secondary/offsite NAS power itself off when idle and self-wake via the CMOS RTC alarm for
+# its backup window. Off by default so a clone of this PUBLIC repo never powers anyone's box off,
+# and because the schedule is per-machine. To enable: create /boot/config/power-schedule.conf from
+# scripts/power-schedule.conf.example, set ENABLED=1, then uncomment the two lines below.
+# Full guide + how it was tested: docs/power-schedule.md.
+#install -m 755 /boot/config/scripts/power-schedule.sh /usr/local/sbin/power-schedule.sh
+#/usr/local/sbin/power-schedule.sh start
+
 # --- Persist Claude Code CLI across reboots (RAM root) — DISABLED on boot ---
 # Intentionally not run automatically so it can't interfere with normal boot.
 # To re-establish Claude after a reboot, run by hand:

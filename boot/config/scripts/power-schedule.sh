@@ -283,6 +283,7 @@ case "$1" in
     [ -r "$STATEF" ] && { printf "live   : "; cat "$STATEF"; }
     inhibited && echo "inhibit: ACTIVE - keepawake/disable flag present, will not power off"
     [ -r "$BREADCRUMB" ] && echo "last   : $(tail -n1 "$BREADCRUMB")"
+    true                          # status is informational - always exit 0
     ;;
 
   arm)

@@ -128,6 +128,15 @@ briefly stop but the client is still attached.
 
 ## How to run it
 
+> **⚠️ Step 0 — verify Unraid's timezone first.** `WAKE_TIMES`, `STAY_UP_UNTIL`,
+> and `POWEROFF_AT` are **local wall-clock times** in whatever zone Unraid is set
+> to. Unraid **defaults to UTC** and does **not** auto-detect your location, so a
+> wrong zone makes the box wake and sleep at the wrong real-world hour. Set it in
+> the web UI — **Settings → Date and Time → Time zone** (leave NTP on) — then run
+> `date` on the box and confirm it prints **your** local time and zone (e.g.
+> `... EDT`), not UTC. Don't configure any times below until that reads correctly.
+> See [Timezone — what the HHMM times mean](#timezone--what-the-hhmm-times-mean).
+
 1. **Test the hardware wake** (see above): `power-schedule.sh test-wake 300`. Only
    continue if the box wakes itself.
 2. **Create the config** from the example:
@@ -161,6 +170,10 @@ power-schedule.sh start|stop|restart
 ```
 
 ## Timezone — what the HHMM times mean
+
+> **Verify this in the Unraid UI before enabling the schedule** — Settings → Date
+> and Time → Time zone. A wrong zone makes every wake and power-off fire at the
+> wrong real-world time.
 
 `WAKE_TIMES`, `STAY_UP_UNTIL`, and `POWEROFF_AT` are **local wall-clock** times in
 whatever zone Unraid is set to (**Settings → Date and Time**). The script feeds

@@ -262,7 +262,11 @@ case "$1" in
     setsid "$0" run >/dev/null 2>&1 &
     echo $! > "$PIDFILE"
     sleep 1
-    is_running && echo "started (pid $(cat "$PIDFILE"))" || { echo "failed - see $LOGFILE"; exit 1; }
+    if is_running; then
+      echo "started (pid $(cat "$PIDFILE"))"
+      echo "note   : wake/off times are LOCAL time - right now it is $(date '+%a %Y-%m-%d %H:%M %Z')."
+      echo "         If that isn't your local time, fix Unraid -> Settings -> Date and Time, then restart."
+    else echo "failed - see $LOGFILE"; exit 1; fi
     ;;
 
   stop)
@@ -282,6 +286,7 @@ case "$1" in
     if [ "$DRY_RUN" = 1 ]; then echo "mode   : $POWEROFF_MODE | DRY-RUN (observe only - will NOT power off)"
     else echo "mode   : $POWEROFF_MODE | ARMED (real shutdowns enabled)"; fi
     echo "wake   : times='${WAKE_TIMES:-none}' external=$WAKE_EXTERNAL"
+    echo "now    : $(date '+%a %Y-%m-%d %H:%M:%S %Z')  <- confirm this is your LOCAL time (Unraid: Settings -> Date and Time)"
     a=$(cat "$RTC" 2>/dev/null); now=$(date +%s)
     if [ -n "$a" ] && [ "$a" -gt "$now" ] 2>/dev/null; then
       printf "armed  : %s (in %dh%02dm)\n" "$(fmt "$a")" $(( (a-now)/3600 )) $(( ((a-now)%3600)/60 ))

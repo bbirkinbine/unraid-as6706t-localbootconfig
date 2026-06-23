@@ -1,5 +1,15 @@
 # power-schedule.conf.example - site config for power-schedule.sh
 #
+# ##########################################################################
+# #  FIRST, verify Unraid's clock:  Settings -> Date and Time -> Time zone #
+# #                                                                        #
+# #  WAKE_TIMES / STAY_UP_UNTIL / POWEROFF_AT are LOCAL wall-clock times   #
+# #  in that zone. Unraid defaults to UTC and does NOT auto-detect your    #
+# #  location, so a wrong zone makes the box wake/sleep at the wrong       #
+# #  real-world hour. Confirm on the box:                                  #
+# #      date     # must print YOUR local time + zone (e.g. EDT), not UTC  #
+# ##########################################################################
+#
 # Copy this file to  /boot/config/power-schedule.conf  and you're done: the ACTIVE
 # block below is already set up for this repo's box (a secondary/offsite Unraid NAS).
 # Leave DRY_RUN=1 for the first night to watch it, then change it to 0.

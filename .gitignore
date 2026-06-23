@@ -87,6 +87,10 @@ network-extra.cfg
 # --- Claude Code local artifacts (personal permissions, not repo content) ----
 .claude/settings.local.json
 
+# --- power-schedule live site config (per-machine wake/off times; .example is tracked)
+power-schedule.conf
+power-schedule.last
+
 # --- OS / editor cruft -------------------------------------------------------
 .DS_Store
 Thumbs.db

@@ -190,10 +190,20 @@ run_loop() {
   local floor; floor=$(next_epoch "$floor_time")
   log "watchdog up: mode=$POWEROFF_MODE iface=$iface wake='${WAKE_TIMES:-none}' floor=$floor_time (next $(fmt "$floor")) idle=${IDLE_SHUTDOWN_MIN}m thresh=${THRESH_KBPS}KB/s dry_run=$DRY_RUN"
 
-  local prx ptx pt rx tx now dt db kbps idle=0 reason fire
+  local prx ptx pt rx tx now dt db kbps idle=0 reason fire a
   prx=$(cat "$rxf" 2>/dev/null || echo 0); ptx=$(cat "$txf" 2>/dev/null || echo 0); pt=$(date +%s)
   while sleep "$LOOP_SECS"; do
     now=$(date +%s)
+
+    # Keep a future wake armed at ALL times - not just right before the scheduled shutdown - so a
+    # MANUAL power-off (Unraid GUI, `poweroff`, the power button) also brings the box back, and not
+    # only the scheduled one. The RTC alarm is one-shot: it's consumed when it fires while we're
+    # still up, so re-arm as soon as it reads spent/missing. (No-op when wake is external.)
+    if [ -n "$WAKE_TIMES" ]; then
+      a=$(cat "$RTC" 2>/dev/null)
+      { [ -z "$a" ] || [ "$a" = 0 ] || [ "$a" -le "$now" ] 2>/dev/null; } && arm_next_wake >/dev/null
+    fi
+
     rx=$(cat "$rxf" 2>/dev/null || echo "$prx"); tx=$(cat "$txf" 2>/dev/null || echo "$ptx")
     dt=$((now - pt)); [ "$dt" -lt 1 ] && dt=1
     db=$(( (rx - prx) + (tx - ptx) )); [ "$db" -lt 0 ] && db=0     # guard counter wrap/reset

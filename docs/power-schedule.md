@@ -109,6 +109,13 @@ briefly stop but the client is still attached.
   back *and* `alarm_IRQ` flipped to `yes` before issuing `poweroff`. If arming
   fails, or no wake is configured (`WAKE_TIMES` empty and `WAKE_EXTERNAL=0`), it
   **aborts the shutdown and stays on**.
+* **A wake stays armed at all times** (re-armed each tick once the one-shot alarm
+  is spent), so a **manual** power-off — Unraid GUI, `poweroff`, the power button —
+  also brings the box back, not just the scheduled shutdown. You don't have to
+  remember to use `power-schedule.sh off`. (Consequence: to keep the box
+  *deliberately* off — vacation, decommission — stop the daemon and clear the
+  alarm: `power-schedule.sh stop; echo 0 > /sys/class/rtc/rtc0/wakealarm`, then
+  power off. Otherwise it will wake at the next `WAKE_TIMES`.)
 * **`ENABLED=0` by default.** `start` refuses until you set `ENABLED=1` in the
   config — so a fresh clone, or an accidental run, does nothing.
 * **`DRY_RUN=1` by default.** It logs `WOULD power off …` and stays up, so you

@@ -84,10 +84,53 @@ is_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 # Shutdown is inhibited while either flag exists (manual "keep it awake").
 inhibited() { [ -e /boot/config/power-schedule.disable ] || [ -e /dev/shm/power-schedule.keepawake ]; }
 
+# Canonicalize an HH:MM-ish value to "HHMM" (echoed), or return 1 if it isn't a real 24h time.
+# Accepts 2345, 23:45, 9:45 (-> 0945), with stray spaces; rejects junk and out-of-range values.
+# Note: a BARE 3-digit value (945) is rejected as ambiguous - write 0945 or 9:45.
+norm_hhmm() {
+  local v="${1//[[:space:]]/}" h m
+  case "$v" in
+    '')   return 1 ;;
+    *:*)  h=${v%%:*}; m=${v##*:} ;;                              # colon form: hour:minute
+    *)    [ ${#v} -eq 4 ] || return 1; h=${v:0:2}; m=${v:2:2} ;; # bare form: must be 4 digits
+  esac
+  case "$h" in ''|*[!0-9]*) return 1 ;; esac
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  h=$((10#$h)); m=$((10#$m))
+  { [ "$h" -le 23 ] && [ "$m" -le 59 ]; } || return 1
+  printf '%02d%02d' "$h" "$m"
+}
+
+# Validate + canonicalize the configured times ONCE (after the conf is sourced). Rewrites
+# WAKE_TIMES / STAY_UP_UNTIL / POWEROFF_AT to canonical HHMM, records anything it had to fix in
+# TIME_FIXED, and anything it can't parse in TIME_ERRORS. Callers refuse to act when TIME_ERRORS
+# is set, so a typo'd time fails loudly at start instead of silently mis-scheduling.
+TIME_ERRORS=""; TIME_FIXED=""
+validate_times() {
+  local var raw t n out
+  if [ -n "$WAKE_TIMES" ]; then
+    out=""
+    for t in $WAKE_TIMES; do
+      if n=$(norm_hhmm "$t"); then
+        out="$out $n"; [ "$n" != "$t" ] && TIME_FIXED="$TIME_FIXED WAKE_TIMES:'$t'->$n"
+      else TIME_ERRORS="$TIME_ERRORS WAKE_TIMES='$t'"; fi
+    done
+    WAKE_TIMES="${out# }"
+  fi
+  for var in STAY_UP_UNTIL POWEROFF_AT; do
+    raw=${!var}
+    if n=$(norm_hhmm "$raw"); then
+      [ "$n" != "$raw" ] && TIME_FIXED="$TIME_FIXED $var:'$raw'->$n"; printf -v "$var" '%s' "$n"
+    else TIME_ERRORS="$TIME_ERRORS $var='$raw'"; fi
+  done
+}
+
 # Epoch of the next local HH:MM strictly in the future (today's, or tomorrow's if already passed).
-# GNU date: a bare "HH:MM" means today at that time; "HH:MM tomorrow" the day after.
+# Input is canonicalized first, so callers may pass "2345" or "23:45". GNU date does the rest.
 next_epoch() {
-  local H=${1:0:2} M=${1:2:2} t now
+  local hhmm H M t now
+  hhmm=$(norm_hhmm "$1") || return 1
+  H=${hhmm:0:2} M=${hhmm:2:2}
   t=$(date -d "$H:$M" +%s 2>/dev/null) || return 1
   now=$(date +%s)
   [ "$t" -le "$((now + 60))" ] && t=$(date -d "$H:$M tomorrow" +%s 2>/dev/null)
@@ -182,6 +225,7 @@ do_scheduled_poweroff() {
 
 run_loop() {
   trap 'log "watchdog stopping"; exit 0' TERM INT
+  [ -n "$TIME_ERRORS" ] && { log "FATAL: invalid time config:$TIME_ERRORS"; exit 1; }
   local iface; iface=$(detect_iface)
   [ -z "$iface" ] && { log "FATAL: no data interface found"; exit 1; }
   local rxf=/sys/class/net/$iface/statistics/rx_bytes
@@ -242,10 +286,18 @@ run_loop() {
   done
 }
 
+validate_times    # canonicalize/validate the configured times before dispatching any subcommand
+
 case "$1" in
   run) run_loop ;;
 
   start)
+    if [ -n "$TIME_ERRORS" ]; then
+      echo "CONFIG ERROR - invalid time value(s):$TIME_ERRORS"
+      echo "  Use 24-hour HHMM, e.g. 2345 (11:45 PM) or 0905 (9:05 AM). 'HH:MM' like 23:45 is fine too."
+      log "start refused: invalid time config:$TIME_ERRORS"; exit 1
+    fi
+    [ -n "$TIME_FIXED" ] && { echo "note   : normalized time(s):$TIME_FIXED"; log "normalized:$TIME_FIXED"; }
     is_running && { echo "already running (pid $(cat "$PIDFILE"))"; exit 0; }
     if [ "$ENABLED" != 1 ]; then
       echo "power-schedule is DISABLED (ENABLED=0)."
@@ -285,6 +337,8 @@ case "$1" in
   status)
     is_running && echo "daemon : RUNNING (pid $(cat "$PIDFILE"))" || echo "daemon : stopped"
     echo "enabled: $([ "$ENABLED" = 1 ] && echo yes || echo 'no (ENABLED=0 - inert)')"
+    [ -n "$TIME_ERRORS" ] && echo "ERROR  : invalid time(s):$TIME_ERRORS  -> fix $CONF and restart"
+    [ -n "$TIME_FIXED" ] && echo "fixed  : normalized:$TIME_FIXED"
     if [ "$DRY_RUN" = 1 ]; then echo "mode   : $POWEROFF_MODE | DRY-RUN (observe only - will NOT power off)"
     else echo "mode   : $POWEROFF_MODE | ARMED (real shutdowns enabled)"; fi
     echo "wake   : times='${WAKE_TIMES:-none}' external=$WAKE_EXTERNAL"
@@ -304,7 +358,9 @@ case "$1" in
     ;;
 
   arm)
-    if t=$(arm_next_wake "${2:-}"); then echo "armed wake for $(fmt "$t")"
+    n="${2:-}"
+    if [ -n "$n" ]; then n=$(norm_hhmm "$2") || { echo "invalid time '$2' - use HHMM (e.g. 2345) or HH:MM"; exit 1; }; fi
+    if t=$(arm_next_wake "$n"); then echo "armed wake for $(fmt "$t")"
     else echo "arm FAILED - see $LOGFILE (is WAKE_TIMES set, or pass an HHMM?)"; exit 1; fi
     ;;
 

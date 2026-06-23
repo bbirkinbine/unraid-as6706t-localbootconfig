@@ -25,7 +25,8 @@
 # ============================================================================
 ENABLED=1
 DRY_RUN=1                 # 1 = observe only (logs "WOULD power off"); set 0 for real shutdowns
-WAKE_TIMES="2345"
+WAKE_TIMES="2345"         # 24h HHMM local time (2345 = 11:45 PM). Several: "2345 0530".
+                          # '23:45' is accepted too; bad/out-of-range times are rejected at start.
 POWEROFF_MODE=idle
 
 # The rest already default to these values - uncomment only to change them:

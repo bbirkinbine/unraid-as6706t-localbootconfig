@@ -209,7 +209,7 @@ defaults). Full annotated list in
 | --- | ------- | ------- |
 | `ENABLED` | `0` | `start` refuses unless `1` |
 | `DRY_RUN` | `1` | `1` = observe only; `0` = real shutdowns |
-| `WAKE_TIMES` | *(empty)* | space-separated local `HHMM` wake times; soonest is armed |
+| `WAKE_TIMES` | *(empty)* | space-separated local 24h `HHMM` times (`2345`, `0905`); the soonest upcoming is armed |
 | `WAKE_EXTERNAL` | `0` | `1` = WoL/BIOS wakes it; allows power-off without arming RTC |
 | `POWEROFF_MODE` | `none` | `none` \| `idle` \| `fixed` |
 | `STAY_UP_UNTIL` | `0300` | *(idle)* earliest local time a shutdown may happen |
@@ -218,6 +218,14 @@ defaults). Full annotated list in
 | `FIXED_FORCE` | `0` | *(fixed)* `1` = power off even mid-transfer |
 | `THRESH_KBPS` | `100` | NIC rx+tx below this (KB/s) = idle |
 | `BUSY_PORTS` | `445 873 2049` | attached-client ports; add `22` for rsync-over-ssh |
+
+**Time format & validation.** `WAKE_TIMES`, `STAY_UP_UNTIL`, and `POWEROFF_AT` are
+24-hour `HHMM` local times (e.g. `2345`, `0905`). `HH:MM` (`23:45`, `9:45`) is
+accepted and **normalized** automatically. Out-of-range or junk values — and
+**ambiguous bare 3-digit times like `945`** (write `0945` or `9:45`) — are
+**rejected at start**: the daemon refuses to run and `status` shows the offending
+value, rather than silently scheduling the wrong hour. Anything it auto-normalized
+is reported on `start` and `status` (e.g. `fixed : normalized: WAKE_TIMES:'23:45'->2345`).
 
 ## Example: this repo's box (secondary / offsite Unraid NAS)
 

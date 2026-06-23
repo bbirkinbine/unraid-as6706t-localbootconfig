@@ -31,7 +31,9 @@
 #   power-schedule.sh start|stop|restart|status|run
 #   power-schedule.sh arm [HHMM]      # manually (re)arm next wake (default: next of WAKE_TIMES)
 #   power-schedule.sh off             # arm next wake + power off NOW (manual "go back to sleep")
-#   power-schedule.sh test-wake [sec] # arm sec-from-now (default 300) + poweroff - the bring-up test
+#   power-schedule.sh test-wake [sec] [yes]  # POWERS OFF now, must self-wake in [sec] (default 300).
+#                                            # Prompts for confirmation; pass 'yes' to skip. Don't run
+#                                            # on a remote box you can't physically power on.
 #
 # --------------------------------------------------------------------------------------
 # DEFAULTS  (override in /boot/config/power-schedule.conf - do NOT edit per-site values here)
@@ -312,15 +314,28 @@ case "$1" in
     ;;
 
   test-wake)
-    secs=${2:-300}; now=$(date +%s); target=$((now + secs))
-    [ -w "$RTC" ] || { echo "$RTC not writable"; exit 1; }
+    secs=${2:-300}
+    # This command POWERS THE BOX OFF. Confirm first, unless 'yes'/'-y' is passed. Over a
+    # non-interactive shell (ssh 'cmd', a script) read hits EOF and we abort - it can't fire blind.
+    if [ "$3" != yes ] && [ "$3" != -y ]; then
+      echo "WARNING: 'test-wake' POWERS OFF this system NOW, then relies on the RTC alarm to power"
+      echo "         it back on in ${secs}s (~$((secs/60)) min). If RTC wake does NOT work on this"
+      echo "         hardware, the box stays OFF until powered on by hand (power button / remote PDU)."
+      echo "         Do NOT run this on a remote box you cannot physically reach."
+      printf "Type 'yes' to power off and test the wake: "
+      read -r ans || ans=""
+      [ "$ans" = yes ] || { echo "aborted - nothing changed, system still running."; exit 0; }
+    fi
+    now=$(date +%s); target=$((now + secs))
+    [ -w "$RTC" ] || { echo "$RTC not writable - NOT powering off"; exit 1; }
     echo 0 > "$RTC"; echo "$target" > "$RTC"
     rb=$(cat "$RTC" 2>/dev/null)
-    [ "$rb" = "$target" ] || { echo "RTC verify failed (readback '$rb') - aborting"; exit 1; }
+    [ "$rb" = "$target" ] || { echo "RTC verify failed (readback '$rb') - NOT powering off"; exit 1; }
     echo "armed wake for $(fmt "$target") (${secs}s out). Powering off; the box should return on its own."
     logger -t power-schedule "test-wake ${secs}s -> $(fmt "$target")"
     sync; poweroff
     ;;
 
-  *) echo "Usage: $0 {start|stop|restart|status|run|arm [HHMM]|off|test-wake [secs]}"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status|run|arm [HHMM]|off|test-wake [secs] [yes]}"
+     echo "       (test-wake and off POWER THE BOX OFF; test-wake prompts first)"; exit 1 ;;
 esac

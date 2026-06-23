@@ -60,9 +60,11 @@ poweroff
 
 Result: the box powered itself **back on ~5 minutes later**, untouched —
 confirming RTC wake works under Unraid on this hardware. `power-schedule.sh
-test-wake [secs]` re-runs exactly that sequence (default 300 s) on demand. Run it
-on any new box before trusting the schedule — the alarm range and BIOS behaviour
-differ between models and firmware.
+test-wake [secs]` re-runs exactly that sequence (default 300 s) on demand — it
+**powers the box off** and prompts for confirmation first. Run it on any new box
+before trusting the schedule (the alarm range and BIOS behaviour differ between
+models and firmware), but **only where you can power the box back on if wake
+fails** — not blind on a remote box.
 
 > **Wake-on-LAN was rejected** for the offsite role: a WoL magic packet has to
 > originate on the box's *local* LAN, but the backup is triggered from offsite,
@@ -137,8 +139,11 @@ briefly stop but the client is still attached.
 > `... EDT`), not UTC. Don't configure any times below until that reads correctly.
 > See [Timezone — what the HHMM times mean](#timezone--what-the-hhmm-times-mean).
 
-1. **Test the hardware wake** (see above): `power-schedule.sh test-wake 300`. Only
-   continue if the box wakes itself.
+1. **Test the hardware wake** (see above): `power-schedule.sh test-wake 300`. ⚠️ **This
+   powers the box OFF** and relies on the RTC to bring it back in ~5 min. It prompts for
+   confirmation first, and if wake fails the box stays off until powered on by hand — so
+   **only run it where you have physical or remote-PDU access**, never blind on a remote
+   box. Only continue if the box wakes itself.
 2. **Create the config** from the example:
    ```bash
    cp /boot/config/scripts/power-schedule.conf.example /boot/config/power-schedule.conf
@@ -165,7 +170,7 @@ briefly stop but the client is still attached.
 power-schedule.sh status            # enabled/mode, armed wake, time-to-wake, live busy/idle, last shutdown
 power-schedule.sh arm [HHMM]        # manually (re)arm the next wake (default: next of WAKE_TIMES)
 power-schedule.sh off               # arm next wake + power off NOW (manual "go back to sleep")
-power-schedule.sh test-wake [secs]  # arm secs-from-now (default 300) + poweroff — the bring-up test
+power-schedule.sh test-wake [secs]  # POWERS OFF, must self-wake in secs (default 300); prompts first
 power-schedule.sh start|stop|restart
 ```
 

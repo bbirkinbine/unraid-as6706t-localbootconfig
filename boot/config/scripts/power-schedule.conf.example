@@ -1,61 +1,56 @@
 # power-schedule.conf.example - site config for power-schedule.sh
 #
-# Copy this to  /boot/config/power-schedule.conf  on the NAS and edit. The daemon
-# sources that file over its built-in defaults, so you only set what differs. The
-# live conf is intentionally NOT committed (it's per-machine, and this is a public
-# repo); /boot/config/power-schedule.conf is gitignored.
+# Copy this file to  /boot/config/power-schedule.conf  and you're done: the ACTIVE
+# block below is already set up for this repo's box (a secondary/offsite Unraid NAS).
+# Leave DRY_RUN=1 for the first night to watch it, then change it to 0.
 #
-# This is sourced by bash - it's plain VAR=value lines, no spaces around '='.
+#   cp /boot/config/scripts/power-schedule.conf.example /boot/config/power-schedule.conf
 #
-# Two safety gates ship OFF:
-#   ENABLED=0  -> `power-schedule.sh start` refuses until you flip this to 1.
-#   DRY_RUN=1  -> it logs "WOULD power off" but stays up. Watch one full cycle,
-#                 confirm the timing, THEN set DRY_RUN=0.
-#
-# ============================================================================
-# WORKED EXAMPLE — this repo's box: a secondary / offsite Unraid NAS
-# ----------------------------------------------------------------------------
-# Role: backup target only. Primary NAS pushes overnight jobs at 00:00, 01:00,
-# 01:30, and 02:00 (the 02:00 one is the largest). The rest of the day it has no
-# reason to be powered on, so:
-#   * wake at 23:45, ~15 min before the first job;
-#   * never power off before 03:00 (gives the big 02:00 job room to finish);
-#   * after 03:00, power off once it's been idle (no SMB/rsync client attached,
-#     no logins, NIC quiet) for 30 minutes;
-#   * always arm the next 23:45 wake before shutting down.
-# ============================================================================
-
-ENABLED=1                 # set to 1 after you've tested (see docs/power-schedule.md)
-DRY_RUN=1                 # leave at 1 for the first night; set 0 to enable real shutdowns
-
-# -- Wake (power ON) --
-WAKE_TIMES="2345"         # one window/day. For several: WAKE_TIMES="2345 0530"
-
-# -- Power OFF --
-POWEROFF_MODE=idle        # idle = off after the window, once quiet (this box's choice)
-STAY_UP_UNTIL="0300"      # earliest a shutdown may happen ("3a is safest" for the 02:00 job)
-IDLE_SHUTDOWN_MIN=30      # idle minutes past 03:00 before powering off
-THRESH_KBPS=100           # rx+tx below this = idle; tune to your real backup throughput
+# (Sourced by bash: VAR=value, no spaces around '='. The live conf is gitignored.)
 
 # ============================================================================
-# OTHER SCENARIOS (uncomment / adapt instead of the idle block above)
-# ----------------------------------------------------------------------------
-# Fixed off-time, but never cut a live transfer:
-#   POWEROFF_MODE=fixed
-#   POWEROFF_AT="0500"
-#   FIXED_FORCE=0          # 1 = power off at 05:00 even mid-transfer
-#
-# Wake for the backup, but let SOMETHING ELSE turn it off (e.g. the push job runs
-#   `ssh root@nas power-schedule.sh off` when it finishes):
-#   POWEROFF_MODE=none
-#   WAKE_TIMES="0145"
-#
-# No RTC wake at all — Wake-on-LAN or a BIOS power-on schedule brings it up, this
-#   just handles the idle power-off (asserting an external wake so it won't refuse):
-#   WAKE_TIMES=""
-#   WAKE_EXTERNAL=1
-#   POWEROFF_MODE=idle
-#
-# rsync-over-ssh pushes and you want connection-based busy detection on port 22:
-#   BUSY_PORTS="445 873 2049 22"
+#  ACTIVE - secondary / offsite NAS
+#  Wake at 23:45 (just before the 00:00 backup); after 03:00, power off once it
+#  has been idle 30 min; re-arm the next 23:45 wake on the way down.
 # ============================================================================
+ENABLED=1
+DRY_RUN=1                 # 1 = observe only (logs "WOULD power off"); set 0 for real shutdowns
+WAKE_TIMES="2345"
+POWEROFF_MODE=idle
+
+# The rest already default to these values - uncomment only to change them:
+#STAY_UP_UNTIL="0300"     # earliest a shutdown may happen
+#IDLE_SHUTDOWN_MIN=30     # idle minutes past that before powering off
+#THRESH_KBPS=100          # NIC rx+tx below this (KB/s) = idle
+
+
+# ============================================================================
+#  OTHER PRESETS - ignore unless adapting for a different box. To use one,
+#  comment out the ACTIVE block above and uncomment a preset here.
+# ============================================================================
+
+# -- Fixed off-time (predictable), but never cut a live transfer --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_TIMES="2345"
+#POWEROFF_MODE=fixed
+#POWEROFF_AT="0500"
+#FIXED_FORCE=0            # 1 = power off at 05:00 even mid-transfer
+
+# -- Wake via RTC, but let the push job power it off (ssh root@nas power-schedule.sh off) --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_TIMES="0145"
+#POWEROFF_MODE=none
+
+# -- No RTC wake: WoL or a BIOS power-on schedule wakes it; this only does the idle off --
+#ENABLED=1
+#DRY_RUN=1
+#WAKE_EXTERNAL=1
+#POWEROFF_MODE=idle
+
+# -- Multiple wake windows in a day --
+#WAKE_TIMES="0145 1330"
+
+# -- rsync-over-ssh pushes: also treat port 22 connections as "busy" --
+#BUSY_PORTS="445 873 2049 22"

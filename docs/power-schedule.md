@@ -171,8 +171,14 @@ power-schedule.sh status            # enabled/mode, armed wake, time-to-wake, li
 power-schedule.sh arm [HHMM]        # manually (re)arm the next wake (default: next of WAKE_TIMES)
 power-schedule.sh off               # arm next wake + power off NOW (manual "go back to sleep")
 power-schedule.sh test-wake [secs]  # POWERS OFF, must self-wake in secs (default 300); prompts first
-power-schedule.sh start|stop|restart
+power-schedule.sh start|stop|restart|reload   # reload = restart (applies config edits)
 ```
+
+> **Applying a config change:** the daemon reads `/boot/config/power-schedule.conf`
+> only at startup, so after editing it run `power-schedule.sh reload` (an alias for
+> `restart`) to apply — a reboot applies it too. `status` prints a `CHANGED:` line
+> whenever the on-disk config differs from what the running daemon loaded, so you're
+> not left thinking an edit took effect when it hasn't.
 
 ## Timezone — what the HHMM times mean
 

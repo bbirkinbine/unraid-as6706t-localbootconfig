@@ -28,7 +28,7 @@
 #   is where you set ENABLED=1 once you've tested.
 #
 # Usage:
-#   power-schedule.sh start|stop|restart|status|run
+#   power-schedule.sh start|stop|restart|reload|status|run   # reload = restart (applies conf edits)
 #   power-schedule.sh arm [HHMM]      # manually (re)arm next wake (default: next of WAKE_TIMES)
 #   power-schedule.sh off             # arm next wake + power off NOW (manual "go back to sleep")
 #   power-schedule.sh test-wake [sec] [yes]  # POWERS OFF now, must self-wake in [sec] (default 300).
@@ -73,6 +73,7 @@ RTC=/sys/class/rtc/rtc0/wakealarm
 PIDFILE=/var/run/power-schedule.pid
 LOGFILE=/var/log/power-schedule.log          # /var/log is tmpfs (RAM) on Unraid - no USB-flash wear
 STATEF=/dev/shm/power-schedule.state         # live watchdog state for `status` (tmpfs)
+RUNCFG=/dev/shm/power-schedule.running       # config the running daemon loaded - lets status flag edits
 BREADCRUMB=/boot/config/power-schedule.last   # one line per shutdown on USB (survives poweroff)
 
 # --------------------------------------------------------------------------------------
@@ -123,6 +124,14 @@ validate_times() {
       [ "$n" != "$raw" ] && TIME_FIXED="$TIME_FIXED $var:'$raw'->$n"; printf -v "$var" '%s' "$n"
     else TIME_ERRORS="$TIME_ERRORS $var='$raw'"; fi
   done
+}
+
+# Signature of the behaviourally-significant config. The daemon writes this at startup (RUNCFG);
+# status compares it against the current on-disk values to show a "restart to apply" hint.
+config_sig() {
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+    "$ENABLED" "$DRY_RUN" "$WAKE_TIMES" "$WAKE_EXTERNAL" "$POWEROFF_MODE" \
+    "$STAY_UP_UNTIL" "$IDLE_SHUTDOWN_MIN" "$POWEROFF_AT" "$FIXED_FORCE" "$THRESH_KBPS"
 }
 
 # Epoch of the next local HH:MM strictly in the future (today's, or tomorrow's if already passed).
@@ -224,8 +233,9 @@ do_scheduled_poweroff() {
 }
 
 run_loop() {
-  trap 'log "watchdog stopping"; exit 0' TERM INT
+  trap 'log "watchdog stopping"; rm -f "$RUNCFG"; exit 0' TERM INT
   [ -n "$TIME_ERRORS" ] && { log "FATAL: invalid time config:$TIME_ERRORS"; exit 1; }
+  config_sig > "$RUNCFG" 2>/dev/null    # record the config we loaded, so status can flag later edits
   local iface; iface=$(detect_iface)
   [ -z "$iface" ] && { log "FATAL: no data interface found"; exit 1; }
   local rxf=/sys/class/net/$iface/statistics/rx_bytes
@@ -332,10 +342,13 @@ case "$1" in
     else echo "not running"; fi
     ;;
 
-  restart) "$0" stop; sleep 1; "$0" start ;;
+  restart|reload) "$0" stop; sleep 1; "$0" start ;;   # reload = restart; applies config edits
 
   status)
     is_running && echo "daemon : RUNNING (pid $(cat "$PIDFILE"))" || echo "daemon : stopped"
+    if is_running && [ -r "$RUNCFG" ] && [ "$(cat "$RUNCFG")" != "$(config_sig)" ]; then
+      echo "CHANGED: on-disk config differs from the running daemon -> run '$0 reload' to apply"
+    fi
     echo "enabled: $([ "$ENABLED" = 1 ] && echo yes || echo 'no (ENABLED=0 - inert)')"
     [ -n "$TIME_ERRORS" ] && echo "ERROR  : invalid time(s):$TIME_ERRORS  -> fix $CONF and restart"
     [ -n "$TIME_FIXED" ] && echo "fixed  : normalized:$TIME_FIXED"
@@ -392,6 +405,6 @@ case "$1" in
     sync; poweroff
     ;;
 
-  *) echo "Usage: $0 {start|stop|restart|status|run|arm [HHMM]|off|test-wake [secs] [yes]}"
-     echo "       (test-wake and off POWER THE BOX OFF; test-wake prompts first)"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|reload|status|run|arm [HHMM]|off|test-wake [secs] [yes]}"
+     echo "       (reload = restart, applies config edits; test-wake and off POWER THE BOX OFF)"; exit 1 ;;
 esac

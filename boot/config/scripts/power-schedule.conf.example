@@ -14,6 +14,10 @@
 # block below is already set up for this repo's box (a secondary/offsite Unraid NAS).
 # Leave DRY_RUN=1 for the first night to watch it, then change it to 0.
 #
+# APPLYING CHANGES: the daemon reads this file only at startup. After ANY edit here,
+# run   power-schedule.sh restart   to apply it (a reboot applies it too). 'status'
+# prints a CHANGED: line when the file differs from the running daemon.
+#
 #   cp /boot/config/scripts/power-schedule.conf.example /boot/config/power-schedule.conf
 #
 # (Sourced by bash: VAR=value, no spaces around '='. The live conf is gitignored.)

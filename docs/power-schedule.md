@@ -128,6 +128,45 @@ briefly stop but the client is still attached.
   `/boot/config/power-schedule.last` (on USB, survives the power-off) with the
   time and the next armed wake — proof the cycle is working.
 
+## Don't power off *through* a scheduled job (Mover, parity, plugins)
+
+A box can only run a `cron`/timer job if it's **powered on** when that job is
+due — and Unraid's `cron` does **not** catch up missed runs (it's Vixie cron, no
+anacron). So any task scheduled **inside your power-off window simply never
+runs**, and it does *not* fire late the next day. Treat every overnight job's
+time as a hard constraint on when you may power off.
+
+The one that bites people is the **Mover**. Unraid's stock Mover schedule is
+**Daily at 03:40** — cron `40 3 * * *`, what the GUI writes by default; confirm
+*your* value at **Settings → Scheduler → Mover Settings**. If the box powers off
+at ~03:00, the 03:40 mover never fires, the cache never drains, and any Mover
+Tuning rules (*move files older than N days*, *move all at X% full*) never get a
+chance to act — those are **filters applied when mover runs**, not independent
+triggers. The result is a cache that fills until it overflows to the array: data
+stays safe, but the cache (and your whole tiering policy) quietly stops working.
+
+**Before enabling the schedule, list what's due overnight and reconcile it:**
+
+* `Settings → Scheduler` — Mover, parity check / parity-sync, SSD TRIM
+* `crontab -l` and `cat /etc/cron.d/*` — plugin and User Scripts cron jobs
+
+Two ways to reconcile a job like the 03:40 mover with an `idle` power-off:
+
+1. **Stay up past it** — set `STAY_UP_UNTIL` *after* the job's time (e.g. `0400`
+   to clear a 03:40 mover). The job fires while the box is still up; once it
+   finishes and the box goes idle again, it powers off and re-arms as normal.
+   This is what this repo's box does (see the worked example below).
+2. **Move the job earlier** — reschedule it into the awake window (e.g. Mover at
+   `02:45`), so it completes before the power-off floor opens.
+
+A job that's **already running** when the floor opens won't be cut off *if it
+shows up to the busy detector* — e.g. Mover Tuning set to `rsync` as its move
+tool is caught by the `rsync` process check, and a parity check keeps the array
+busy via NIC-independent disk I/O… which idle detection does **not** watch. A
+purely local job that makes no NIC traffic, holds no client connection, and runs
+no watched process is invisible to idle detection. So prefer option 1's margin
+(be up *before* the job starts) over relying on mid-run detection to save it.
+
 ## How to run it
 
 > **⚠️ Step 0 — verify Unraid's timezone first.** `WAKE_TIMES`, `STAY_UP_UNTIL`,
@@ -150,6 +189,9 @@ briefly stop but the client is still attached.
    # edit /boot/config/power-schedule.conf: set WAKE_TIMES, POWEROFF_MODE, ENABLED=1
    ```
    (`/boot/config/power-schedule.conf` is gitignored — it's per-machine.)
+   Also reconcile your overnight `cron` jobs with the power-off window — see
+   [Don't power off through a scheduled job](#dont-power-off-through-a-scheduled-job-mover-parity-plugins)
+   (the default 03:40 Mover is the usual gotcha).
 3. **Start it** (leave `DRY_RUN=1` for now) and check it:
    ```bash
    install -m 755 /boot/config/scripts/power-schedule.sh /usr/local/sbin/
@@ -244,20 +286,25 @@ ENABLED=1
 DRY_RUN=0
 WAKE_TIMES="2345"        # wake ~15 min before the 00:00 job
 POWEROFF_MODE=idle
-STAY_UP_UNTIL="0300"     # don't even consider shutdown before 03:00 (covers the 02:00 job's tail)
-IDLE_SHUTDOWN_MIN=30     # after 03:00, off once idle 30 min
+STAY_UP_UNTIL="0400"     # earliest shutdown — 0400, not 0300, so the box is still up
+                         #   for Unraid's 03:40 Mover (see "Don't power off through a
+                         #   scheduled job" above). Also covers the big 02:00 job's tail.
+IDLE_SHUTDOWN_MIN=30     # after that, off once idle 30 min
 THRESH_KBPS=100
 ```
 
-So: wakes itself at 23:45 → backups run → stays up through 03:00 no matter what →
-powers off once the last job has been done for 30 min → arms the next 23:45 wake
-on the way down. If the big 02:00 job is still transferring at 03:00, the
-watchdog sees the traffic and waits.
+So: wakes itself at 23:45 → backups run → at 03:40 the Mover fires while the box
+is still up (its `rsync` move registers as "busy") → stays up until both the
+backups and the mover have been done for 30 min → powers off → arms the next
+23:45 wake on the way down. If the big 02:00 job is still transferring, or the
+mover is still moving, the watchdog sees the activity and waits.
 
-Note that `STAY_UP_UNTIL`, `IDLE_SHUTDOWN_MIN`, and `THRESH_KBPS` are written out
-even though they equal the script's built-in defaults. That's deliberate: pinning
-them in the conf keeps this box's policy visible in one place and means it won't
-silently change if a future version of the script ever ships different defaults.
+`STAY_UP_UNTIL` is set to `0400` rather than the script's built-in `0300`
+**specifically to clear the 03:40 mover** — a `0300` floor would let the box
+power off before the mover ever ran. `IDLE_SHUTDOWN_MIN` and `THRESH_KBPS` happen
+to equal the built-in defaults but are pinned here anyway, so this box's whole
+policy stays visible in one file and won't drift if a future script ships
+different defaults.
 
 ## BIOS: surviving a real power outage
 

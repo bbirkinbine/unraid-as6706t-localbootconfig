@@ -60,8 +60,13 @@ FIXED_FORCE=0             # [fixed] 1 = power off at POWEROFF_AT even mid-transf
 # -- "Busy" detection (idle mode, and fixed mode's wait-for-idle) ------------
 THRESH_KBPS=100           # data-NIC rx+tx below this (KB/s) counts as idle. Tune ABOVE idle chatter,
                           #   BELOW a real transfer (slow WAN backups can be only a few hundred KB/s).
+DISK_THRESH_KBPS=2000     # array+cache disk read+write below this (KB/s) counts as idle. Catches LOCAL
+                          #   work that has NO network: a `cp`/`tar`/`dd` an admin is running, appdata/VM
+                          #   backups, etc. (mover/parity/scrub are also named explicitly below). Real
+                          #   storage work runs at tens of MB/s; tune ABOVE idle chatter. 0 = disable.
 BUSY_PORTS="445 873 2049" # established connections on these LOCAL ports = client attached: SMB / rsync
-                          #   daemon / NFS. (rsync-over-ssh is caught by the rsync process check.)
+                          #   daemon / NFS. (rsync-over-ssh is caught by the rsync process check; add 22
+                          #   here if you want ANY ssh connection - incl. SFTP/SCP - to hold the box up.)
 LOOP_SECS=60              # watchdog tick
 IFACE=""                  # data interface; empty = autodetect the default-route iface (usually br0)
 ARM_GUARD_MIN=10          # refuse to arm a wake less than this many minutes out (sanity check)
@@ -129,9 +134,9 @@ validate_times() {
 # Signature of the behaviourally-significant config. The daemon writes this at startup (RUNCFG);
 # status compares it against the current on-disk values to show a "restart to apply" hint.
 config_sig() {
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
     "$ENABLED" "$DRY_RUN" "$WAKE_TIMES" "$WAKE_EXTERNAL" "$POWEROFF_MODE" \
-    "$STAY_UP_UNTIL" "$IDLE_SHUTDOWN_MIN" "$POWEROFF_AT" "$FIXED_FORCE" "$THRESH_KBPS"
+    "$STAY_UP_UNTIL" "$IDLE_SHUTDOWN_MIN" "$POWEROFF_AT" "$FIXED_FORCE" "$THRESH_KBPS" "$DISK_THRESH_KBPS"
 }
 
 # Epoch of the next local HH:MM strictly in the future (today's, or tomorrow's if already passed).
@@ -191,9 +196,16 @@ arm_next_wake() {
   arm_epoch "$target" && echo "$target"
 }
 
-# Echo space-separated reasons the box is "busy" right now (empty = idle). Arg 1 = KB/s this tick.
+# Total sectors (read + written) across the real array + cache block devices, from /proc/diskstats.
+# Whole-disk lines only (sdX / nvmeXnY) - skip partitions and md* so we don't double-count; x512 = bytes.
+disk_sectors() {
+  awk '$3 ~ /^(sd[a-z]+|nvme[0-9]+n[0-9]+)$/ {s += $6 + $10} END {print s+0}' /proc/diskstats 2>/dev/null
+}
+
+# Echo space-separated reasons the box is "busy" right now (empty = idle).
+# Arg 1 = NIC KB/s this tick; arg 2 = array+cache disk KB/s this tick.
 is_busy() {
-  local kbps=$1 r="" p cnt
+  local kbps=$1 dkbps=$2 r="" p cnt md m
   who 2>/dev/null | grep -q . && r="$r login"            # an interactive login = admin present
   for p in $BUSY_PORTS; do                               # a storage client attached?
     cnt=$(ss -Htn state established "sport = :$p" 2>/dev/null | grep -c .)
@@ -201,7 +213,31 @@ is_busy() {
   done
   pgrep -x rsync  >/dev/null 2>&1 && r="$r rsync"         # rsync server (rsync-over-ssh or daemon)
   pgrep -x rclone >/dev/null 2>&1 && r="$r rclone"
+  pgrep -x sftp-server >/dev/null 2>&1 && r="$r sftp"    # SFTP subsystem = an admin/file-transfer session
+  pgrep -x scp         >/dev/null 2>&1 && r="$r scp"     # scp server side (old protocol; new scp = sftp)
+  # Unraid Mover (cache<->array) is local disk I/O - zero net traffic, no client port, and runs as the
+  # compiled 'move' binary, NOT rsync - so it's invisible to every check above. Its pidfile exists for
+  # the whole run (stock mover + ca.mover.tuning both use it); gate on a live pid so a stale one (mover
+  # killed mid-run) can't pin the box up forever.
+  { [ -f /var/run/mover.pid ] && kill -0 "$(cat /var/run/mover.pid 2>/dev/null)" 2>/dev/null; } && r="$r mover"
+  # A parity check / disk rebuild / clear is md-resync I/O: also purely local (no net, no client port)
+  # and FAR costlier to interrupt than a mover. mdResync>0 while such an op is active (running OR paused);
+  # mdResyncAction names which ("check P Q", "recon P", "clear", ...). mdResyncAction is stale when idle,
+  # so gate on mdResync, not the action.
+  md=$(/usr/local/sbin/mdcmd status 2>/dev/null)
+  if [ "$(awk -F= '/^mdResync=/{print $2}' <<<"$md")" -gt 0 ] 2>/dev/null; then
+    r="$r resync:$(awk -F= '/^mdResyncAction=/{print $2}' <<<"$md" | tr ' ' '_')"
+  fi
+  # A btrfs/zfs scrub is local read I/O with no network - same risk class as parity. (A throttled scrub
+  # can dip below DISK_THRESH_KBPS, so name it explicitly rather than rely only on the disk net below.)
+  for m in $(findmnt -nrt btrfs -o TARGET 2>/dev/null | grep '^/mnt/'); do
+    btrfs scrub status "$m" 2>/dev/null | grep -qiE 'status:[[:space:]]*running' && { r="$r scrub"; break; }
+  done
+  case "$r" in *scrub*) : ;; *) zpool status 2>/dev/null | grep -q 'scrub in progress' && r="$r scrub" ;; esac
+  # Network catch-all: any active transfer of ANY protocol (FTP, SFTP, WebDAV, iSCSI...) shows up here.
   [ "${kbps:-0}" -ge "$THRESH_KBPS" ] && r="$r net:${kbps}KB/s"
+  # Disk catch-all: any local-disk work with no network (admin cp/tar/dd, appdata/VM backup) shows here.
+  [ "${DISK_THRESH_KBPS:-0}" -gt 0 ] && [ "${dkbps:-0}" -ge "$DISK_THRESH_KBPS" ] && r="$r disk:${dkbps}KB/s"
   echo "${r# }"
 }
 
@@ -246,8 +282,9 @@ run_loop() {
   local floor; floor=$(next_epoch "$floor_time")
   log "watchdog up: mode=$POWEROFF_MODE iface=$iface wake='${WAKE_TIMES:-none}' floor=$floor_time (next $(fmt "$floor")) idle=${IDLE_SHUTDOWN_MIN}m thresh=${THRESH_KBPS}KB/s dry_run=$DRY_RUN"
 
-  local prx ptx pt rx tx now dt db kbps idle=0 reason fire a
+  local prx ptx pt rx tx now dt db kbps idle=0 reason fire a pdsk dsk ddb dkbps
   prx=$(cat "$rxf" 2>/dev/null || echo 0); ptx=$(cat "$txf" 2>/dev/null || echo 0); pt=$(date +%s)
+  pdsk=$(disk_sectors)
   while sleep "$LOOP_SECS"; do
     now=$(date +%s)
 
@@ -264,13 +301,15 @@ run_loop() {
     dt=$((now - pt)); [ "$dt" -lt 1 ] && dt=1
     db=$(( (rx - prx) + (tx - ptx) )); [ "$db" -lt 0 ] && db=0     # guard counter wrap/reset
     kbps=$(( db / dt / 1024 ))
-    prx=$rx; ptx=$tx; pt=$now
+    dsk=$(disk_sectors); ddb=$(( dsk - pdsk )); [ "$ddb" -lt 0 ] && ddb=0   # guard reboot/counter reset
+    dkbps=$(( ddb * 512 / dt / 1024 ))
+    prx=$rx; ptx=$tx; pt=$now; pdsk=$dsk
 
-    reason=$(is_busy "$kbps")
+    reason=$(is_busy "$kbps" "$dkbps")
     if [ -n "$reason" ]; then idle=0; else idle=$((idle + LOOP_SECS)); fi
 
-    printf 'ts=%s mode=%s armed=%s floor=%s idle_s=%s kbps=%s busy=%s\n' \
-      "$now" "$POWEROFF_MODE" "$(cat "$RTC" 2>/dev/null)" "$floor" "$idle" "$kbps" "${reason:-none}" \
+    printf 'ts=%s mode=%s armed=%s floor=%s idle_s=%s kbps=%s dkbps=%s busy=%s\n' \
+      "$now" "$POWEROFF_MODE" "$(cat "$RTC" 2>/dev/null)" "$floor" "$idle" "$kbps" "$dkbps" "${reason:-none}" \
       > "$STATEF" 2>/dev/null
 
     fire=0
@@ -362,7 +401,7 @@ case "$1" in
     elif [ -n "$a" ] && [ "$a" -gt 0 ] 2>/dev/null; then echo "armed  : $(fmt "$a") (in the past - not pending)"
     else echo "armed  : (none)"; fi
     awk '/alarm_IRQ/{print "alarm  : alarm_IRQ="$3}' /proc/driver/rtc 2>/dev/null
-    echo "config : stay-up-until=$STAY_UP_UNTIL idle=${IDLE_SHUTDOWN_MIN}m poweroff-at=$POWEROFF_AT thresh=${THRESH_KBPS}KB/s ports='$BUSY_PORTS' iface=$(detect_iface)"
+    echo "config : stay-up-until=$STAY_UP_UNTIL idle=${IDLE_SHUTDOWN_MIN}m poweroff-at=$POWEROFF_AT thresh=${THRESH_KBPS}KB/s disk-thresh=${DISK_THRESH_KBPS}KB/s ports='$BUSY_PORTS' iface=$(detect_iface)"
     echo "conf   : $([ -r "$CONF" ] && echo "$CONF" || echo "(none - using built-in defaults)")"
     [ -r "$STATEF" ] && { printf "live   : "; cat "$STATEF"; }
     inhibited && echo "inhibit: ACTIVE - keepawake/disable flag present, will not power off"

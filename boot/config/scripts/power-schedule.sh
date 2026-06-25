@@ -201,6 +201,11 @@ is_busy() {
   done
   pgrep -x rsync  >/dev/null 2>&1 && r="$r rsync"         # rsync server (rsync-over-ssh or daemon)
   pgrep -x rclone >/dev/null 2>&1 && r="$r rclone"
+  # Unraid Mover (cache<->array) is local disk I/O - zero net traffic, no client port, and runs as the
+  # compiled 'move' binary, NOT rsync - so it's invisible to every check above. Its pidfile exists for
+  # the whole run (stock mover + ca.mover.tuning both use it); gate on a live pid so a stale one (mover
+  # killed mid-run) can't pin the box up forever.
+  { [ -f /var/run/mover.pid ] && kill -0 "$(cat /var/run/mover.pid 2>/dev/null)" 2>/dev/null; } && r="$r mover"
   [ "${kbps:-0}" -ge "$THRESH_KBPS" ] && r="$r net:${kbps}KB/s"
   echo "${r# }"
 }

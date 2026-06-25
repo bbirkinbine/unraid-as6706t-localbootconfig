@@ -43,7 +43,10 @@ POWEROFF_MODE=idle        # idle = power off once quiet, after STAY_UP_UNTIL
 STAY_UP_UNTIL="0400"      # earliest a shutdown may happen - 0400 keeps the box up for the 03:40 Mover
 IDLE_SHUTDOWN_MIN=30      # power off after this many idle minutes (past STAY_UP_UNTIL)
 THRESH_KBPS=100           # NIC rx+tx below this (KB/s) counts as idle - tune to your backup speed
-#BUSY_PORTS="445 873 2049"  # attached-client ports counted as busy; add 22 for rsync-over-ssh
+DISK_THRESH_KBPS=2000     # array+cache disk read+write below this (KB/s) counts as idle. Catches local
+                          # work with NO network (admin cp/tar/dd, appdata/VM backups). Real storage work
+                          # is tens of MB/s; raise it if background chatter keeps the box up, 0 disables.
+#BUSY_PORTS="445 873 2049"  # attached-client ports counted as busy; add 22 to also count any SFTP/SCP/ssh
 
 
 # ============================================================================

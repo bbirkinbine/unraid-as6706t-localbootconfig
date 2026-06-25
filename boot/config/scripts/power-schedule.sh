@@ -193,7 +193,7 @@ arm_next_wake() {
 
 # Echo space-separated reasons the box is "busy" right now (empty = idle). Arg 1 = KB/s this tick.
 is_busy() {
-  local kbps=$1 r="" p cnt
+  local kbps=$1 r="" p cnt md
   who 2>/dev/null | grep -q . && r="$r login"            # an interactive login = admin present
   for p in $BUSY_PORTS; do                               # a storage client attached?
     cnt=$(ss -Htn state established "sport = :$p" 2>/dev/null | grep -c .)
@@ -206,6 +206,14 @@ is_busy() {
   # the whole run (stock mover + ca.mover.tuning both use it); gate on a live pid so a stale one (mover
   # killed mid-run) can't pin the box up forever.
   { [ -f /var/run/mover.pid ] && kill -0 "$(cat /var/run/mover.pid 2>/dev/null)" 2>/dev/null; } && r="$r mover"
+  # A parity check / disk rebuild / clear is md-resync I/O: also purely local (no net, no client port)
+  # and FAR costlier to interrupt than a mover. mdResync>0 while such an op is active (running OR paused);
+  # mdResyncAction names which ("check P Q", "recon P", "clear", ...). mdResyncAction is stale when idle,
+  # so gate on mdResync, not the action.
+  md=$(/usr/local/sbin/mdcmd status 2>/dev/null)
+  if [ "$(awk -F= '/^mdResync=/{print $2}' <<<"$md")" -gt 0 ] 2>/dev/null; then
+    r="$r resync:$(awk -F= '/^mdResyncAction=/{print $2}' <<<"$md" | tr ' ' '_')"
+  fi
   [ "${kbps:-0}" -ge "$THRESH_KBPS" ] && r="$r net:${kbps}KB/s"
   echo "${r# }"
 }

@@ -22,8 +22,13 @@ SAFE_PWM=160           # pwm to leave the fan at if the daemon is stopped (~63%)
 # cycle at idle; without damping the fan chases each spike and surges audibly. Each
 # cycle the fan moves only ceil(1/SMOOTH_DIV) of the way toward the new target, so a
 # one-cycle spike barely moves it while sustained load still ramps fully within
-# ~SMOOTH_DIV cycles (~30s at INTERVAL=10). Set to 1 to disable smoothing.
-SMOOTH_DIV=3
+# ~SMOOTH_DIV cycles (~50s at INTERVAL=10). Set to 1 to disable smoothing.
+# Raised 3 -> 5 alongside the HDD curve below. Narrowing that band from 40-52 to
+# 40-45 made it 2.4x steeper (17 -> 41 PWM per degree), so a 1C flicker now moves the
+# target 41 PWM instead of 17; without more damping the fan would step ~110 RPM every
+# time a disk ticks a degree. Disk thermal mass is measured in minutes, so taking
+# ~50s to converge still tracks the physics with room to spare.
+SMOOTH_DIV=5
 
 # CPU package (coretemp). N5105 idles ~56-65C (measured), throttles at 105C. Floor sits
 # above the idle band so the fan stays at MINPWM when the chip is only micro-boosting,
@@ -35,10 +40,20 @@ CPU_MAXTEMP=85         # at/above this -> MAXPWM
 NVME_MINTEMP=45
 NVME_MAXTEMP=72
 
-# SATA HDDs (drivetemp). Idle ~25-34C measured; WD Red/Red Pro + He shucks rated to
-# 60-65C but live longest <~50C. Stay at floor until 40C, ramp to full by 52C.
+# SATA HDDs (drivetemp). Idle ~25-34C measured; drives are rated to 60-65C but live
+# longest <~50C. Stay at floor until 40C, ramp to full by 45C.
+#
+# MAXTEMP is pinned to Unraid's DEFAULT DISK WARNING THRESHOLD (45C; Settings -> Disk
+# Settings, stored as `hot` in dynamix.cfg). The fan must be at full authority by the
+# time the platform starts raising alarms, not still ramping past them. This was
+# originally 52 - seven degrees ABOVE that threshold - so under sustained load the
+# webGUI flagged disks as hot while the fan still held a third of its range in
+# reserve. Not a theoretical case: Unraid schedules a parity check monthly by default
+# and it runs the whole array flat out for 34-37h.
+#
+# Retune for your own room and workload - see docs/fan-control.md.
 HDD_MINTEMP=40
-HDD_MAXTEMP=52
+HDD_MAXTEMP=45
 
 PIDFILE=/var/run/fan-autocontrol.pid
 LOGFILE=/var/log/fan-autocontrol.log

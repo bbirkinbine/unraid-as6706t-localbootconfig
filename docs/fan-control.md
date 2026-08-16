@@ -71,6 +71,211 @@ All at the top of the script (PWM is 0–255; temps in whole °C):
 The curve is a clamped linear interpolation: at/below `MINTEMP` → `MINPWM`,
 at/above `MAXTEMP` → `MAXPWM`, linear in between.
 
+## Tuning the HDD curve for your workload
+
+**The shipped HDD values are a starting point, not a validated default.**
+`HDD_MINTEMP=40` / `HDD_MAXTEMP=52` were picked from datasheet reasoning when this
+script was written — drives are rated to 60–65 °C but live longest below ~50 °C —
+and were not measured against a real sustained load. What is right for your box
+depends on things this repo cannot know: ambient temperature, which drives are
+fitted, how many bays are populated, duty cycle, and how much fan noise you will
+put up with.
+
+So tune them. This section is how.
+
+### The one part that isn't a matter of taste
+
+Everything else below is preference. This isn't:
+
+> **`HDD_MAXTEMP` belongs at — or a degree above — your Unraid disk temperature
+> warning threshold. Never above it.**
+
+Unraid's default warning is **45 °C** (*Settings → Disk Settings*; stored as `hot`
+in `dynamix.cfg`, with `max` as the critical threshold). A `HDD_MAXTEMP` of 52 sits
+7 °C past that, which means the fan is still only at 53 % while the webGUI has
+already started flagging the disk as hot and emailing you about it. The fan
+controller and the platform disagree about what "too warm" means, and the platform
+is the one sending the notifications.
+
+This matters more than it first appears, because **Unraid schedules a parity check
+monthly by default** (`0 0 1 * *`), and it runs the entire array at sustained
+sequential read for a long time — 34–37 hours on this box's 20 TB array. That is not
+an exotic edge case. It is the most common heavy workload an Unraid box ever sees,
+and it is exactly when the top of the curve gets used.
+
+### Measure your own box
+
+You need one sustained, array-wide load. A parity check is the canonical choice: it
+is the workload the curve exists for, and you can start one on demand from
+*Main → Check*. A disk rebuild works too.
+
+With that running, sample the fan and every drive once a minute:
+
+```bash
+hw=$(for d in /sys/class/hwmon/hwmon*; do
+       [ "$(cat $d/name 2>/dev/null)" = it8625 ] && echo $d; done)
+while true; do
+  printf '%s pwm=%s rpm=%s' "$(date +%H:%M:%S)" "$(cat $hw/pwm1)" "$(cat $hw/fan1_input)"
+  for d in /sys/class/hwmon/hwmon*; do
+    [ "$(cat $d/name 2>/dev/null)" = drivetemp ] || continue
+    for b in "$d"/device/block/*; do
+      printf ' %s=%sC' "${b##*/}" "$(( $(cat $d/temp1_input)/1000 ))"
+    done
+  done
+  printf '\n'
+  sleep 60
+done
+```
+
+Three things to know before you read the output:
+
+- **This board reports no ambient temperature.** Don't go looking — every candidate
+  was checked:
+
+  | Candidate | Reading | Why it's useless |
+  | --- | --- | --- |
+  | `acpitz` / `thermal_zone0` | `27800` m°C, never varies | Hardcoded ACPI constant |
+  | `it8625` `temp1/2/3` | `-128000` m°C | IT86xx not-connected sentinel; pins unpopulated, and there is no `temp*_type` attribute to reconfigure |
+  | DIMM SPD (`jc42`) | absent | i2c has only an EEPROM at `0-0050` |
+  | Seagate attr 190 `Airflow_Temperature_Cel` | equals attr 194 | Mirrors drive temp despite the name |
+  | NVMe `Sensor 2` | ~5–6 °C above room, responsive | Best proxy available, but it is the SSD's own board temp and it moves with fan speed |
+
+  Every sensor that responds at all is downstream of the fan, so none of them
+  isolates room air from cooling. For a true ambient reading you need external
+  hardware — a USB thermistor (TEMPer-class, ideally on a short extension so the
+  port's own heat doesn't skew it) or a networked smart-home sensor. For one-off
+  curve comparisons, a thermometer at the intake and a written-down number is
+  entirely sufficient.
+
+- **The IT8625's own automatic fan mode is wired to a dead sensor.**
+  `pwm1_auto_channels_temp` is `1`, meaning hardware auto-mode follows `temp1` —
+  which reads −128 °C. This is why the daemon sets `pwm1_enable=1` (manual) and
+  drives the fan itself: on this board, software control isn't a preference, it's
+  the only thing that works.
+
+- **Give it half an hour.** Drives heat-soak fast and then sit flat. On this box the
+  array climbed from 40 °C to its plateau in about 30 minutes and then held within
+  1 °C for the next five hours. Anything shorter measures the transient, not the
+  equilibrium.
+- **A 60 s sample aliases the oscillation.** It will make a drive that is really
+  cycling 43↔45 look like it is parked at 43. `/var/log/fan-autocontrol.log` records
+  every PWM change at 10 s resolution and is the honest source for how much the
+  temperature is actually swinging.
+
+### Choosing values
+
+| Knob | How to pick it |
+| ---- | -------------- |
+| `HDD_MINTEMP` | Just above the hottest your drives get when the array is *not* under sustained load. Below this the fan sits at `MINPWM` and the box is quiet. Too low and you pay idle noise for nothing; too high and a busy array gets no help until it is already warm. |
+| `HDD_MAXTEMP` | See the rule above — at or just above your Unraid warning threshold. |
+| `SMOOTH_DIV` | Raise it whenever you steepen the curve. |
+
+Narrowing the band steepens the response — more authority, but the fan swings
+harder on every 1 °C flicker:
+
+| Band | Slope | PWM at 43 °C | PWM at 45 °C |
+| ---- | ----- | ------------ | ------------ |
+| 40 → 52 (shipped) | 17 PWM/°C | 102 (40 %) | 136 (53 %) |
+| 40 → 46 | 34 PWM/°C | 153 (60 %) | 221 (87 %) |
+| 36 → 45 | 23 PWM/°C | 210 (82 %) | 255 (100 %) |
+
+Note that `HDD_MINTEMP` is self-targeting: lowering it changes nothing on a box
+whose drives idle cool, and progressively engages the fan on a busy box whose drives
+sit warm. If your array idles in the low 40s, lower `HDD_MINTEMP` rather than
+raising it — you want the ramp to start before the drives are already in trouble.
+
+### Worked example — this box
+
+Measured during a disk rebuild (sustained ~180 MB/s write to one 20 TB member,
+full-speed read on the other five), in a **22.8 °C / 73 °F room** — measured with a
+room thermometer, not by the box, which has no ambient sensor. If your NAS sits in
+an enclosed cabinet its intake air will be warmer than the room reading.
+
+| | `40 → 52`, `SMOOTH_DIV=3` | `40 → 46`, `SMOOTH_DIV=5` |
+| --- | --- | --- |
+| Rebuild-target drive | 45–46 °C, flat for 5 h | 43 °C |
+| Fan | 136–153 PWM, ~1740 RPM mean | 156–186 PWM, ~1900 RPM mean |
+| Unraid "disk is hot" alerts | 26 in 4 h 39 m | 0 |
+
+The cost is about 10 % more fan speed under sustained load. Idle behavior is
+unchanged, because `HDD_MINTEMP` stayed at 40 and these drives rest at 24–25 °C.
+
+### Predicting this for your own room
+
+Temperature *rise over intake air* is the portable number — it transfers to other
+rooms in a way that absolute temperatures do not. Under the sustained load above,
+with all six bays populated and the fan at ~163 PWM mean, this chassis settles at:
+
+| Bay | Rise over room air |
+| --- | --- |
+| 1 (nearest intake) | ~15 °C |
+| 2 | ~16 °C |
+| 3 | ~17 °C |
+| 4 | ~19 °C |
+| 5 | ~20 °C |
+| 6 | ~20 °C |
+
+There is a real ~5 °C front-to-back gradient across the bay stack, so **which slot a
+drive occupies matters as much as which drive it is.** Add ~3 °C to the hottest bay
+if that drive is the write target of a rebuild rather than being read.
+
+Apply this to your own room to predict where you will land:
+
+| Room | Hottest bay under sustained load |
+| --- | --- |
+| 20 °C / 68 °F | ~40 °C |
+| 23 °C / 73 °F | ~43 °C — this box |
+| 27 °C / 81 °F | ~47 °C |
+| 30 °C / 86 °F | ~50 °C |
+
+This is why the shipped `HDD_MAXTEMP=52` is a poor default even though it never hurt
+anything here. **This box is in a cool room and still crossed Unraid's 45 °C warning
+threshold during a rebuild.** A NAS in a 27 °C room — an ordinary summer, or a warm
+closet — sits around 47 °C under every monthly parity check, and on the shipped
+curve the fan answers that with 255 × (47−40)/(52−40) ≈ 170 PWM, or 67 %. A third of
+the cooling is still being held in reserve while the platform is raising alarms.
+
+**Caveat on this measurement:** the two halves were taken ~25 minutes apart and the
+room was not instrumented (see above — this board has no usable ambient sensor), so
+ambient drift is not excluded. The 2–3 °C drop is consistent with the airflow change
+on its own: mean PWM went from ~143 to ~167, and for forced convection ΔT scales
+roughly as airflow^−0.7, which predicts ~2 °C for a 17 % increase. Rebuild
+throughput also fell ~6 % over the same window as the resync moved to inner tracks,
+worth a few tenths more. No appeal to ambient is needed to explain the result, but
+it is not ruled out either.
+
+### What a curve cannot fix
+
+The AS6706T has **one** system fan for six bays. It will not hold six drives below
+45 °C at constant load in a warm room — there is not enough fan, and no curve
+conjures airflow that isn't there. If your array runs hot continuously rather than
+during monthly maintenance, the honest answer is *both*: tune the curve **and**
+raise Unraid's warning threshold.
+
+Raising it is not cheating. 45 °C is a conservative default, not a cliff — every
+drive in this class is specified to 60–65 °C, and large-fleet reliability data shows
+no meaningful failure correlation below roughly 50 °C. The counters that actually
+track thermal harm are `Time in Over-Temperature` and the lifetime max in
+`smartctl -x`; if those look healthy, a drive sitting at 47 °C under load is fine
+regardless of what the dashboard colours it.
+
+### Applying a change
+
+`/boot/config/go` installs the script to `/usr/local/sbin/` at boot, so **editing the
+flash copy alone does nothing until you reboot.** That asymmetry is useful:
+
+```bash
+# Test live (reverts on reboot — a free safety net):
+vi /usr/local/sbin/fan-autocontrol.sh
+fan-autocontrol.sh restart
+
+# Persist once you're happy:
+vi /boot/config/scripts/fan-autocontrol.sh
+```
+
+`restart` parks the fan at `SAFE_PWM` while it cycles, so there is no cooling gap —
+safe to do mid-parity-check.
+
 ## Usage
 
 ```bash

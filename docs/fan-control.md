@@ -63,23 +63,23 @@ All at the top of the script (PWM is 0–255; temps in whole °C):
 | `MINPWM` | `51` | floor (~20%, ~800 RPM — proven to spin reliably) |
 | `MAXPWM` | `255` | ceiling (100%) |
 | `SAFE_PWM` | `160` | PWM left on the fan if the daemon is stopped (~63%) |
-| `SMOOTH_DIV` | `3` | output damping; higher = slower/smoother |
+| `SMOOTH_DIV` | `5` | output damping; higher = slower/smoother |
 | `CPU_MINTEMP` / `CPU_MAXTEMP` | `62` / `85` | CPU curve (N5105 idles ~56–65 °C, throttles 105 °C) |
 | `NVME_MINTEMP` / `NVME_MAXTEMP` | `45` / `72` | NVMe curve (warn ~70 °C) |
-| `HDD_MINTEMP` / `HDD_MAXTEMP` | `40` / `52` | HDD curve (idle ~25–34 °C; longest life <~50 °C) |
+| `HDD_MINTEMP` / `HDD_MAXTEMP` | `38` / `45` | HDD curve — `MAXTEMP` is pinned to Unraid's default disk warning threshold; see below |
 
 The curve is a clamped linear interpolation: at/below `MINTEMP` → `MINPWM`,
 at/above `MAXTEMP` → `MAXPWM`, linear in between.
 
 ## Tuning the HDD curve for your workload
 
-**The shipped HDD values are a starting point, not a validated default.**
-`HDD_MINTEMP=40` / `HDD_MAXTEMP=52` were picked from datasheet reasoning when this
-script was written — drives are rated to 60–65 °C but live longest below ~50 °C —
-and were not measured against a real sustained load. What is right for your box
-depends on things this repo cannot know: ambient temperature, which drives are
-fitted, how many bays are populated, duty cycle, and how much fan noise you will
-put up with.
+**The shipped HDD values suit a lightly-loaded box in a cool room. They are a
+starting point, not a universal default.** They were originally `40` / `52`, picked
+from datasheet reasoning when this script was written and never measured against a
+real sustained load; the current `40` / `45` come from the measurements below, taken
+on one machine in a 22.8 °C room. What is right for *your* box depends on things
+this repo cannot know: ambient temperature, which drives are fitted, how many bays
+are populated, duty cycle, and how much fan noise you will put up with.
 
 So tune them. This section is how.
 
@@ -87,8 +87,8 @@ So tune them. This section is how.
 
 Everything else below is preference. This isn't:
 
-> **`HDD_MAXTEMP` belongs at — or a degree above — your Unraid disk temperature
-> warning threshold. Never above it.**
+> **Set `HDD_MAXTEMP` equal to your Unraid disk temperature warning threshold, so
+> the fan reaches 100 % exactly as the platform starts warning. Never above it.**
 
 Unraid's default warning is **45 °C** (*Settings → Disk Settings*; stored as `hot`
 in `dynamix.cfg`, with `max` as the critical threshold). A `HDD_MAXTEMP` of 52 sits
@@ -175,14 +175,29 @@ harder on every 1 °C flicker:
 
 | Band | Slope | PWM at 43 °C | PWM at 45 °C |
 | ---- | ----- | ------------ | ------------ |
-| 40 → 52 (shipped) | 17 PWM/°C | 102 (40 %) | 136 (53 %) |
+| 40 → 52 (original) | 17 PWM/°C | 102 (40 %) | 136 (53 %) |
 | 40 → 46 | 34 PWM/°C | 153 (60 %) | 221 (87 %) |
-| 36 → 45 | 23 PWM/°C | 210 (82 %) | 255 (100 %) |
+| **40 → 45 (shipped)** | 41 PWM/°C | 173 (68 %) | 255 (100 %) |
+| 38 → 45 | 29 PWM/°C | 197 (77 %) | 255 (100 %) |
 
-Note that `HDD_MINTEMP` is self-targeting: lowering it changes nothing on a box
-whose drives idle cool, and progressively engages the fan on a busy box whose drives
-sit warm. If your array idles in the low 40s, lower `HDD_MINTEMP` rather than
-raising it — you want the ramp to start before the drives are already in trouble.
+All four were run on this box during a rebuild. `40 → 46` and `38 → 45` both held the
+hottest disk at the same 43 °C despite a 43 PWM difference between them — evidence
+that at 43 °C that drive was **not airflow-limited**, and that pouring more air at it
+buys nothing. That is why the shipped curve keeps `MINTEMP` at 40 rather than
+lowering it: the useful work is done by raising the *top* of the ramp, not by
+starting it earlier.
+
+`HDD_MINTEMP` is self-targeting: lowering it changes nothing on a box whose drives
+idle cool, and progressively engages the fan on a busy box whose drives sit warm. If
+your array idles in the low 40s — where the shipped curve is already ramping —
+lowering `HDD_MINTEMP` is the right move, so the fan starts before the drives are in
+trouble. If your array idles in the 20s like this one, leave it alone.
+
+Whichever band you choose, remember that **narrowing it steepens the response and so
+demands more damping**. Going from `40 → 52` to `40 → 45` takes the slope from 17 to
+41 PWM/°C, meaning a single 1 °C tick now moves the target 41 PWM instead of 17. At
+`SMOOTH_DIV=3` that lands as a ~110 RPM step within ten seconds — audible. Hence the
+matching bump to `SMOOTH_DIV=5`, which halves the first-cycle move to ~70 RPM.
 
 ### Worked example — this box
 
@@ -191,29 +206,41 @@ full-speed read on the other five), in a **22.8 °C / 73 °F room** — measured
 room thermometer, not by the box, which has no ambient sensor. If your NAS sits in
 an enclosed cabinet its intake air will be warmer than the room reading.
 
-| | `40 → 52`, `SMOOTH_DIV=3` | `40 → 46`, `SMOOTH_DIV=5` |
+| | `40 → 52`, `SMOOTH_DIV=3` (original) | `40 → 45`, `SMOOTH_DIV=5` (shipped) |
 | --- | --- | --- |
-| Rebuild-target drive | 45–46 °C, flat for 5 h | 43 °C |
-| Fan | 136–153 PWM, ~1740 RPM mean | 156–186 PWM, ~1900 RPM mean |
-| Unraid "disk is hot" alerts | 26 in 4 h 39 m | 0 |
+| Rebuild-target drive | 45–46 °C, flat for 5 h 06 m | **43 °C** |
+| Fan | 136–153 PWM, ~1740 RPM | 173 PWM, ~1985 RPM |
+| Unraid "disk is hot" alerts | **26 in 4 h 39 m** | **0** |
 
-The cost is about 10 % more fan speed under sustained load. Idle behavior is
-unchanged, because `HDD_MINTEMP` stayed at 40 and these drives rest at 24–25 °C.
+Idle behavior is unchanged — `HDD_MINTEMP` stayed at 40 and these drives rest at
+24–25 °C, so below 40 °C the fan still sits at its 51 PWM floor. The cost is ~240 RPM
+more under sustained load, which on this box means during a rebuild or the monthly
+parity check and at no other time.
+
+Convergence was clean rather than oscillatory, despite the steeper slope — the
+controller walked `132 → 139 → 146 → 152 → 157 → 161 → 164 → 166 → 168 → 170 → 172 →
+173` and stopped, with no sawtooth between the 42 °C and 43 °C targets.
+
+**Measurement honesty:** the "before" column is a five-hour plateau and is solid. The
+"after" column is a much shorter window on this exact curve, though the 43 °C figure
+is corroborated by two other curves tested the same evening (`40 → 46` and `38 → 45`
+both settled the same drive at 42–43 °C). Treat the alert count as the robust result
+and the exact temperature as ±1 °C.
 
 ### Predicting this for your own room
 
 Temperature *rise over intake air* is the portable number — it transfers to other
 rooms in a way that absolute temperatures do not. Under the sustained load above,
-with all six bays populated and the fan at ~163 PWM mean, this chassis settles at:
+with all six bays populated and the fan at 173 PWM, this chassis settles at:
 
 | Bay | Rise over room air |
 | --- | --- |
-| 1 (nearest intake) | ~15 °C |
-| 2 | ~16 °C |
-| 3 | ~17 °C |
-| 4 | ~19 °C |
-| 5 | ~20 °C |
-| 6 | ~20 °C |
+| 1 (nearest intake) | ~14 °C |
+| 2 | ~15 °C |
+| 3 | ~16 °C |
+| 4 | ~18 °C |
+| 5 | ~20 °C *(write target — includes the write penalty)* |
+| 6 | ~19 °C |
 
 There is a real ~5 °C front-to-back gradient across the bay stack, so **which slot a
 drive occupies matters as much as which drive it is.** Add ~3 °C to the hottest bay
@@ -228,12 +255,13 @@ Apply this to your own room to predict where you will land:
 | 27 °C / 81 °F | ~47 °C |
 | 30 °C / 86 °F | ~50 °C |
 
-This is why the shipped `HDD_MAXTEMP=52` is a poor default even though it never hurt
-anything here. **This box is in a cool room and still crossed Unraid's 45 °C warning
-threshold during a rebuild.** A NAS in a 27 °C room — an ordinary summer, or a warm
-closet — sits around 47 °C under every monthly parity check, and on the shipped
-curve the fan answers that with 255 × (47−40)/(52−40) ≈ 170 PWM, or 67 %. A third of
-the cooling is still being held in reserve while the platform is raising alarms.
+This is why the original `HDD_MAXTEMP=52` was a poor default even though it never
+hurt anything here. **This box is in a cool room and still crossed Unraid's 45 °C
+warning threshold during a rebuild.** A NAS in a 27 °C room — an ordinary summer, or
+a warm closet — sits around 47 °C under every monthly parity check, and the old curve
+answered that with `51 + (47−40) × 17 ≈ 170` PWM, or 67 %: a third of the cooling
+still held in reserve while the platform raised alarms. The shipped `40 → 45` curve
+is at 100 % for anything at or above 45 °C.
 
 **Caveat on this measurement:** the two halves were taken ~25 minutes apart and the
 room was not instrumented (see above — this board has no usable ambient sensor), so

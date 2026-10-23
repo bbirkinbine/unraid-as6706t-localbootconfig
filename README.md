@@ -32,8 +32,8 @@ them back deliberately and understand *why* each one exists.
 > critical **PHP2Shell** flaws (CVE-2026-109618 / CVE-2026-109619, CVSS 9.2):
 > unauthenticated code execution in the PHP runtime itself. Unraid's web GUI runs
 > on PHP, and every earlier Unraid release ships a vulnerable PHP. Nothing in
-> this repo needs an older release. See the
-> [7.3.4 release notes](https://docs.unraid.net/unraid-os/release-notes/7.3.4/).
+> this repo needs an older release. See Unraid's
+> [7.3.4 announcement](https://unraid.net/blog/unraid-7-3-4), which names both CVEs.
 
 ## Why this exists
 

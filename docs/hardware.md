@@ -15,7 +15,7 @@ makes the fan and LCD scripts understandable.
 | M.2 slots | **2 × NVMe** (PCIe) |
 | Front panel | character **LCD** (2×16) + status/network/USB LEDs, over an internal serial/GPIO link |
 | BIOS | V1.21 |
-| Role here | Unraid 7.3.1, hostname `NAS-OFFSITE` — an offsite backup target |
+| Role here | Unraid 7.3.4, hostname `NAS-OFFSITE` — an offsite backup target |
 
 ## The IT8625 — why it matters
 

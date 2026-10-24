@@ -42,7 +42,7 @@ actually changes:
 
 ```
 ┌────────────────┐
-│ 192.168.1.226  │   ← line 1: primary IPv4 (falls back to hostname)
+│ 192.0.2.10     │   ← line 1: primary IPv4 (falls back to hostname)
 │ CPU 58C 1200rpm│   ← line 2: CPU package temp + system fan RPM
 └────────────────┘
 ```

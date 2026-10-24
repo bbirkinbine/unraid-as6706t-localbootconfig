@@ -24,6 +24,16 @@ them back deliberately and understand *why* each one exists.
 > from here.
 >
 > **Host it was captured from:** Unraid 7.3.1 on an Intel Celeron N5105 AS6706T.
+>
+> **Currently running on:** Unraid **7.3.4** (kernel 6.18.58-Unraid), same box.
+
+> [!IMPORTANT]
+> **Run Unraid 7.3.4 or later.** 7.3.4 ships PHP 8.4.27, which fixes the
+> critical **PHP2Shell** flaws (CVE-2026-109618 / CVE-2026-109619, CVSS 9.2):
+> unauthenticated code execution in the PHP runtime itself. Unraid's web GUI runs
+> on PHP, and every earlier Unraid release ships a vulnerable PHP. Nothing in
+> this repo needs an older release. See Unraid's
+> [7.3.4 announcement](https://unraid.net/blog/unraid-7-3-4), which names both CVEs.
 
 ## Why this exists
 
@@ -117,10 +127,11 @@ Asustor driver — not the generic mainline `it87` — owns the chip. Full detai
 
 ## Scope / disclaimer
 
-These scripts target the **AS6706T** under **Unraid 7.3.1**. I used the Claude
-Code CLI to help probe *my specific hardware* — identifying the correct hwmon
-temperature sensors (`coretemp`, `nvme`, `drivetemp`, the `it8625` fan chip) and
-working out fan curves that suit this box's CPU, NVMe, and disks.
+These scripts target the **AS6706T** under **Unraid 7.3.4** (first written on
+7.3.1). I used the Claude Code CLI to help probe *my specific hardware* —
+identifying the correct hwmon temperature sensors (`coretemp`, `nvme`,
+`drivetemp`, the `it8625` fan chip) and working out fan curves that suit this
+box's CPU, NVMe, and disks.
 
 **Verify everything against your own hardware before relying on it.** Sensor
 names, the fan-control chip, and safe temperature ranges differ between models,

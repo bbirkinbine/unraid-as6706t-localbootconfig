@@ -47,6 +47,8 @@ DISK_THRESH_KBPS=2000     # array+cache disk read+write below this (KB/s) counts
                           # work with NO network (admin cp/tar/dd, appdata/VM backups). Real storage work
                           # is tens of MB/s; raise it if background chatter keeps the box up, 0 disables.
 #BUSY_PORTS="445 873 2049"  # attached-client ports counted as busy; add 22 to also count any SFTP/SCP/ssh
+MOVER_BEFORE_OFF=1        # if the last backup kept writing to the cache after the scheduled Mover
+                          # finished, run the Mover once more before powering off (at most once a night)
 
 
 # ============================================================================

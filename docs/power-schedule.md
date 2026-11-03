@@ -167,6 +167,49 @@ purely local job that makes no NIC traffic, holds no client connection, and runs
 no watched process is invisible to idle detection. So prefer option 1's margin
 (be up *before* the job starts) over relying on mid-run detection to save it.
 
+### Data that lands *after* the Mover: `MOVER_BEFORE_OFF`
+
+Scheduling the Mover inside the awake window still leaves one gap. The Mover runs
+**once**, at a fixed time, and only moves what is on the cache at that moment. If
+the last backup job is still writing when the Mover finishes, that tail stays on
+the cache until the next night's run. On a big night the cache can fill up.
+
+This happened on this repo's box. The Mover runs at 01:25 and finished at
+01:37:35. The last job (`llmbackup`, 01:15) kept writing **772 GiB** of new files
+to the cache until 02:32:05. The box powered off cleanly at 03:18 with the cache
+at 90%.
+
+`MOVER_BEFORE_OFF=1` closes the gap. When the shutdown condition is met, the
+watchdog first checks every cache-to-array share (`shareUseCache="yes"`) for
+files on its pool that **arrived after the last Mover run started**. If it finds
+any:
+
+1. It runs the Mover once (`/usr/local/sbin/mover start`, the same call as
+   Unraid's `mover.cron`, with its log lines going to syslog). The run counts as
+   busy (`busy=mover`).
+2. Once the Mover finishes and the box has been idle for `IDLE_SHUTDOWN_MIN`
+   again, it powers off.
+
+The extra pass can happen at most **once per night**. "Arrived" is judged by
+**ctime**, since SMB copies keep the source mtime. Files that were already on the
+cache when the last Mover run started don't count, because that run skipped them
+for a reason (open, or already on the array). So one stuck file can't buy an
+extra pass every night. If no Mover run has been seen since boot, every cached
+file counts.
+
+`status` shows what it would move:
+
+```
+cache  : new files not yet moved: llm@cache (since 01:24:20)
+```
+
+On a normal night the extra pass never triggers, because nothing is written after
+the scheduled Mover. On a night when the last job outruns it, the box stays up
+for the Mover run plus one more idle period, then powers off with the cache
+empty. It's ignored in `fixed` mode with `FIXED_FORCE=1`, since a forced off-time
+must not wait for anything. Under `DRY_RUN=1` it only logs `WOULD run a final
+Mover pass`.
+
 ## How to run it
 
 > **⚠️ Step 0 — verify Unraid's timezone first.** `WAKE_TIMES`, `STAY_UP_UNTIL`,
@@ -264,6 +307,7 @@ defaults). Full annotated list in
 | `IDLE_SHUTDOWN_MIN` | `30` | *(idle)* idle minutes past the floor before powering off |
 | `POWEROFF_AT` | `0500` | *(fixed)* local time to power off |
 | `FIXED_FORCE` | `0` | *(fixed)* `1` = power off even mid-transfer |
+| `MOVER_BEFORE_OFF` | `0` | *(Unraid)* `1` = before powering off, run the Mover once more if new files landed on the cache after the last run ([details](#data-that-lands-after-the-mover-mover_before_off)) |
 | `THRESH_KBPS` | `100` | NIC rx+tx below this (KB/s) = idle |
 | `BUSY_PORTS` | `445 873 2049` | attached-client ports; add `22` for rsync-over-ssh |
 

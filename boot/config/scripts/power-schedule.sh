@@ -56,6 +56,11 @@ STAY_UP_UNTIL="0300"      # [idle]  earliest local time a shutdown may happen
 IDLE_SHUTDOWN_MIN=30      # [idle]  idle minutes (past STAY_UP_UNTIL) before powering off
 POWEROFF_AT="0500"        # [fixed] local time to power off
 FIXED_FORCE=0             # [fixed] 1 = power off at POWEROFF_AT even mid-transfer (default: wait for idle)
+MOVER_BEFORE_OFF=0        # [Unraid] 1 = when it's time to power off, first check whether any cache->array
+                          #   share (shareUseCache="yes") still has files on its pool that arrived after the
+                          #   last Mover run started - e.g. a long last backup that outran the scheduled
+                          #   Mover. If so, run the Mover once and wait for it (+ the usual idle period).
+                          #   At most one extra pass per night. Ignored with fixed + FIXED_FORCE=1.
 
 # -- "Busy" detection (idle mode, and fixed mode's wait-for-idle) ------------
 THRESH_KBPS=100           # data-NIC rx+tx below this (KB/s) counts as idle. Tune ABOVE idle chatter,
@@ -80,6 +85,8 @@ LOGFILE=/var/log/power-schedule.log          # /var/log is tmpfs (RAM) on Unraid
 STATEF=/dev/shm/power-schedule.state         # live watchdog state for `status` (tmpfs)
 RUNCFG=/dev/shm/power-schedule.running       # config the running daemon loaded - lets status flag edits
 BREADCRUMB=/boot/config/power-schedule.last   # one line per shutdown on USB (survives poweroff)
+MOVERSTAMP=/dev/shm/power-schedule.moverstart # mtime = when the watchdog last saw a Mover run begin
+MOVER=/usr/local/sbin/mover                   # Unraid's stock mover entry point (what cron + the GUI call)
 
 # --------------------------------------------------------------------------------------
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOGFILE"; }
@@ -134,9 +141,10 @@ validate_times() {
 # Signature of the behaviourally-significant config. The daemon writes this at startup (RUNCFG);
 # status compares it against the current on-disk values to show a "restart to apply" hint.
 config_sig() {
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
     "$ENABLED" "$DRY_RUN" "$WAKE_TIMES" "$WAKE_EXTERNAL" "$POWEROFF_MODE" \
-    "$STAY_UP_UNTIL" "$IDLE_SHUTDOWN_MIN" "$POWEROFF_AT" "$FIXED_FORCE" "$THRESH_KBPS" "$DISK_THRESH_KBPS"
+    "$STAY_UP_UNTIL" "$IDLE_SHUTDOWN_MIN" "$POWEROFF_AT" "$FIXED_FORCE" "$THRESH_KBPS" "$DISK_THRESH_KBPS" \
+    "$MOVER_BEFORE_OFF"
 }
 
 # Epoch of the next local HH:MM strictly in the future (today's, or tomorrow's if already passed).
@@ -241,6 +249,31 @@ is_busy() {
   echo "${r# }"
 }
 
+# Cache->array shares (shareUseCache="yes") that still hold files on their pool which arrived
+# (by ctime - SMB copies preserve the source mtime) after the last Mover run we saw START. Echoes
+# "share@pool ..." (empty = nothing left to flush). Files written before that run and still on the
+# pool were skipped by it (open, or already on the array), so they don't count - otherwise one stuck
+# file would buy an extra Mover pass every night. No Mover seen since boot = every file counts.
+cache_pending() {
+  local cfg share pool use newer=()
+  [ -f "$MOVERSTAMP" ] && newer=(-cnewer "$MOVERSTAMP")
+  for cfg in /boot/config/shares/*.cfg; do      # Unraid writes these with CRLF endings: match to the quote
+    [ -r "$cfg" ] || continue
+    use=$(sed -n 's/^shareUseCache="\([^"]*\)".*/\1/p' "$cfg")
+    [ "$use" = yes ] || continue
+    pool=$(sed -n 's/^shareCachePool="\([^"]*\)".*/\1/p' "$cfg"); pool=${pool:-cache}
+    share=$(basename "$cfg" .cfg)
+    [ -d "/mnt/$pool/$share" ] || continue
+    [ -n "$(find "/mnt/$pool/$share" -type f "${newer[@]}" -print -quit 2>/dev/null)" ] \
+      && printf '%s ' "$share@$pool"
+  done
+}
+
+# Should the watchdog consider a final Mover pass at all? (Unraid only; not under a forced deadline.)
+want_final_mover() {
+  [ "$MOVER_BEFORE_OFF" = 1 ] && [ -x "$MOVER" ] && ! { [ "$POWEROFF_MODE" = fixed ] && [ "$FIXED_FORCE" = 1 ]; }
+}
+
 # Ensure a future wake exists (or an external one is asserted), then power off. With arg "force"
 # it ignores DRY_RUN. If no wake can be guaranteed it ABORTS - never strand the box.
 do_scheduled_poweroff() {
@@ -280,9 +313,10 @@ run_loop() {
   # Floor = the daily time the shutdown window opens (idle: STAY_UP_UNTIL; fixed: POWEROFF_AT).
   local floor_time="$STAY_UP_UNTIL"; [ "$POWEROFF_MODE" = fixed ] && floor_time="$POWEROFF_AT"
   local floor; floor=$(next_epoch "$floor_time")
-  log "watchdog up: mode=$POWEROFF_MODE iface=$iface wake='${WAKE_TIMES:-none}' floor=$floor_time (next $(fmt "$floor")) idle=${IDLE_SHUTDOWN_MIN}m thresh=${THRESH_KBPS}KB/s dry_run=$DRY_RUN"
+  log "watchdog up: mode=$POWEROFF_MODE iface=$iface wake='${WAKE_TIMES:-none}' floor=$floor_time (next $(fmt "$floor")) idle=${IDLE_SHUTDOWN_MIN}m thresh=${THRESH_KBPS}KB/s dry_run=$DRY_RUN mover_before_off=$MOVER_BEFORE_OFF"
 
   local prx ptx pt rx tx now dt db kbps idle=0 reason fire a pdsk dsk ddb dkbps
+  local mseen=0 finalmove=0 pend   # mseen: a Mover run is in progress; finalmove: extra pass used this night
   prx=$(cat "$rxf" 2>/dev/null || echo 0); ptx=$(cat "$txf" 2>/dev/null || echo 0); pt=$(date +%s)
   pdsk=$(disk_sectors)
   while sleep "$LOOP_SECS"; do
@@ -308,6 +342,15 @@ run_loop() {
     reason=$(is_busy "$kbps" "$dkbps")
     if [ -n "$reason" ]; then idle=0; else idle=$((idle + LOOP_SECS)); fi
 
+    # Note when a Mover run BEGINS (scheduled, GUI "Move", or ours); cache_pending() measures "arrived
+    # since" from here. The mover writes its pidfile first thing, so that file's mtime IS the start
+    # time - exact even if this daemon was (re)started mid-run. Fallback: backdate one tick.
+    case " $reason " in
+      *" mover "*) [ "$mseen" = 0 ] && { touch -r /var/run/mover.pid "$MOVERSTAMP" 2>/dev/null \
+                     || touch -d "@$((now - LOOP_SECS))" "$MOVERSTAMP" 2>/dev/null; }; mseen=1 ;;
+      *)           mseen=0 ;;
+    esac
+
     printf 'ts=%s mode=%s armed=%s floor=%s idle_s=%s kbps=%s dkbps=%s busy=%s\n' \
       "$now" "$POWEROFF_MODE" "$(cat "$RTC" 2>/dev/null)" "$floor" "$idle" "$kbps" "$dkbps" "${reason:-none}" \
       > "$STATEF" 2>/dev/null
@@ -321,6 +364,29 @@ run_loop() {
       none)  : ;;
     esac
 
+    # Final Mover pass: the scheduled Mover runs once, at a fixed time, and a long last backup can
+    # keep writing to the cache after it has finished - that data would then sit on the cache until
+    # the next night. If so, run the Mover now and let it hold the box up (it reads as busy=mover);
+    # the shutdown re-qualifies once it's done and the box has been idle IDLE_SHUTDOWN_MIN again.
+    # Once per night, so files the Mover can't move (open, duplicates) can't loop the box awake.
+    if [ "$fire" = 1 ] && [ "$finalmove" = 0 ] && ! inhibited && want_final_mover; then
+      finalmove=1
+      pend=$(cache_pending)
+      if [ -n "$pend" ]; then
+        if [ "$DRY_RUN" = 1 ]; then
+          log "DRY_RUN: WOULD run a final Mover pass first - cache still holds new files for: ${pend% }"
+        else
+          log "final Mover pass: cache still holds new files for: ${pend% } -> starting mover; power-off waits for it"
+          logger -t power-schedule "final Mover pass before power-off (${pend% })"
+          # Same invocation as Unraid's mover.cron (its started/finished lines go to syslog, tag 'move'),
+          # detached so the watchdog keeps ticking - and re-arming the wake - while it runs.
+          setsid bash -c "$MOVER start 2>&1 >/dev/null | logger -t move" </dev/null >/dev/null 2>&1 &
+          idle=0
+          continue
+        fi
+      fi
+    fi
+
     if [ "$fire" = 1 ]; then
       if inhibited; then
         log "would power off (mode=$POWEROFF_MODE) but INHIBITED (keepawake/disable flag) - staying up"
@@ -329,7 +395,7 @@ run_loop() {
         do_scheduled_poweroff
       fi
       # Only reached if we did NOT power off (dry-run/inhibited/abort): cool down + re-pin to next day.
-      idle=0; floor=$(next_epoch "$floor_time")
+      idle=0; finalmove=0; floor=$(next_epoch "$floor_time")
       log "still up; next floor $(fmt "$floor")"
     fi
   done
@@ -401,7 +467,11 @@ case "$1" in
     elif [ -n "$a" ] && [ "$a" -gt 0 ] 2>/dev/null; then echo "armed  : $(fmt "$a") (in the past - not pending)"
     else echo "armed  : (none)"; fi
     awk '/alarm_IRQ/{print "alarm  : alarm_IRQ="$3}' /proc/driver/rtc 2>/dev/null
-    echo "config : stay-up-until=$STAY_UP_UNTIL idle=${IDLE_SHUTDOWN_MIN}m poweroff-at=$POWEROFF_AT thresh=${THRESH_KBPS}KB/s disk-thresh=${DISK_THRESH_KBPS}KB/s ports='$BUSY_PORTS' iface=$(detect_iface)"
+    echo "config : stay-up-until=$STAY_UP_UNTIL idle=${IDLE_SHUTDOWN_MIN}m poweroff-at=$POWEROFF_AT thresh=${THRESH_KBPS}KB/s disk-thresh=${DISK_THRESH_KBPS}KB/s ports='$BUSY_PORTS' iface=$(detect_iface) mover-before-off=$MOVER_BEFORE_OFF"
+    if want_final_mover; then
+      p=$(cache_pending)
+      echo "cache  : $([ -n "$p" ] && echo "new files not yet moved: ${p% }" || echo 'nothing new left to move') (since $([ -f "$MOVERSTAMP" ] && date -r "$MOVERSTAMP" '+%H:%M:%S' || echo 'boot - no Mover run seen yet'))"
+    fi
     echo "conf   : $([ -r "$CONF" ] && echo "$CONF" || echo "(none - using built-in defaults)")"
     [ -r "$STATEF" ] && { printf "live   : "; cat "$STATEF"; }
     inhibited && echo "inhibit: ACTIVE - keepawake/disable flag present, will not power off"
